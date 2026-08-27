@@ -1,0 +1,31 @@
+[project]
+name = "turnwave"
+version = "0.1.0"
+description = "From-scratch end-of-turn detection for voice agents: a text transformer + prosody CNN, fused."
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "torch>=2.3",
+    "sentencepiece>=0.2.0",
+    "numpy>=1.26",
+    "datasets>=2.19",
+    "tqdm>=4.66",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+# CPU-only torch locally; Colab uses its own preinstalled CUDA build.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["turnwave"]
