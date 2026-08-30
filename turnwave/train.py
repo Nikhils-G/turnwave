@@ -1,16 +1,25 @@
-"""Train the text EOT model.
+"""Train an EOT branch: text, audio, or the fused model.
 
-CPU smoke test (a few minutes, proves the pipeline):
-    python -m turnwave.train --train data/text/train.jsonl --val data/text/validation.jsonl \
-        --tokenizer checkpoints/tokenizer/spm.model --out checkpoints/text_eot \
-        --steps 300 --batch-size 64 --limit 20000
+Text (Phase 1):
+    python -m turnwave.train --task text \
+        --train data/text/train.jsonl --val data/text/validation.jsonl \
+        --tokenizer checkpoints/tokenizer/spm.model --out checkpoints/text_eot
 
-Real run (Colab T4, see notebooks/colab_train.ipynb): drop --limit, --steps 6000+.
+Audio (Phase 2):
+    python -m turnwave.train --task audio \
+        --cache data/audio --out checkpoints/audio_eot
+
+One loop serves every task because all three collates return
+`(inputs_tuple, labels)` and every model is called as `model(*inputs)`.
+
+Add --steps 300 --limit 20000 for a CPU smoke run; real training is a Colab T4
+session (see notebooks/colab_train.ipynb).
 """
 
 import argparse
 import contextlib
 import csv
+import json
 import math
 import random
 from dataclasses import asdict
@@ -21,8 +30,10 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
+from .data.audio_loader import EOTAudioDataset, audio_collate, positive_weight
 from .data.loader import EOTTextDataset, make_collate
 from .metrics import average_precision, binary_metrics
+from .models.audio_cnn import AudioEOTConfig, AudioEOTModel
 from .models.text_transformer import TextEOTConfig, TextEOTModel
 from .tokenizer import Tokenizer
 
@@ -46,15 +57,18 @@ def configure_optimizer(model: torch.nn.Module, lr: float, weight_decay: float) 
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, max_batches: int | None = None) -> dict:
+def evaluate(model, loader, device, max_batches: int | None = None,
+             pos_weight: torch.Tensor | None = None) -> dict:
+    """Works for any task: loaders yield (inputs_tuple, labels)."""
     model.eval()
     losses, probs, labels = [], [], []
-    for i, (idx, lengths, y) in enumerate(loader):
+    for i, (inputs, y) in enumerate(loader):
         if max_batches is not None and i >= max_batches:
             break
-        idx, lengths, y = idx.to(device), lengths.to(device), y.to(device)
-        logits = model(idx, lengths)
-        losses.append(F.binary_cross_entropy_with_logits(logits, y).item())
+        inputs = tuple(t.to(device) for t in inputs)
+        y = y.to(device)
+        logits = model(*inputs)
+        losses.append(F.binary_cross_entropy_with_logits(logits, y, pos_weight=pos_weight).item())
         probs.extend(torch.sigmoid(logits).tolist())
         labels.extend(y.tolist())
     model.train()
@@ -66,9 +80,11 @@ def evaluate(model, loader, device, max_batches: int | None = None) -> dict:
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--train", type=Path, required=True)
-    ap.add_argument("--val", type=Path, required=True)
-    ap.add_argument("--tokenizer", type=Path, required=True)
+    ap.add_argument("--task", choices=["text", "audio"], default="text")
+    ap.add_argument("--train", type=Path, help="text task: train jsonl")
+    ap.add_argument("--val", type=Path, help="text task: validation jsonl")
+    ap.add_argument("--tokenizer", type=Path, help="text task: sentencepiece model")
+    ap.add_argument("--cache", type=Path, help="audio task: feature cache directory")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--steps", type=int, default=6000)
     ap.add_argument("--batch-size", type=int, default=256)
@@ -96,20 +112,44 @@ def main(argv=None):
     device = torch.device("cuda" if args.device == "auto" and torch.cuda.is_available() else
                           args.device if args.device != "auto" else "cpu")
 
-    tok = Tokenizer(args.tokenizer)
-    train_ds = EOTTextDataset(args.train, tok, args.max_len, limit=args.limit)
-    val_ds = EOTTextDataset(args.val, tok, args.max_len)
-    collate = make_collate(tok.pad_id)
+    if args.task == "text":
+        if not (args.train and args.val and args.tokenizer):
+            ap.error("--task text needs --train, --val and --tokenizer")
+        tok = Tokenizer(args.tokenizer)
+        train_ds = EOTTextDataset(args.train, tok, args.max_len, limit=args.limit)
+        val_ds = EOTTextDataset(args.val, tok, args.max_len)
+        collate = make_collate(tok.pad_id)
+        cfg = TextEOTConfig(vocab_size=tok.vocab_size, d_model=args.d_model,
+                            n_layers=args.n_layers, n_heads=args.n_heads,
+                            max_seq_len=args.max_len, dropout=args.dropout)
+        model = TextEOTModel(cfg).to(device)
+    else:
+        if not args.cache:
+            ap.error("--task audio needs --cache")
+        manifest = json.loads((args.cache / "manifest.json").read_text())
+        n_mels, n_frames = manifest["shape"]
+        train_ds = EOTAudioDataset(args.cache, "train", limit=args.limit)
+        val_ds = EOTAudioDataset(args.cache, "validation")
+        collate = audio_collate
+        cfg = AudioEOTConfig(n_mels=n_mels, n_frames=n_frames, dropout=args.dropout)
+        model = AudioEOTModel(cfg).to(device)
+
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, drop_last=True,
                               collate_fn=collate, num_workers=args.num_workers)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, collate_fn=collate,
                             num_workers=args.num_workers)
 
-    cfg = TextEOTConfig(vocab_size=tok.vocab_size, d_model=args.d_model, n_layers=args.n_layers,
-                        n_heads=args.n_heads, max_seq_len=args.max_len, dropout=args.dropout)
-    model = TextEOTModel(cfg).to(device)
-    print(f"device={device} params={model.num_params/1e6:.2f}M "
-          f"train={len(train_ds)} val={len(val_ds)}")
+    # Rebalance the loss if the cache is skewed, so the model cannot win by
+    # guessing the majority class.
+    pos_weight = None
+    if args.task == "audio":
+        weight = positive_weight(train_ds)
+        if abs(weight - 1.0) > 0.05:
+            pos_weight = torch.tensor(weight, device=device)
+
+    print(f"device={device} task={args.task} params={model.num_params/1e6:.2f}M "
+          f"train={len(train_ds)} val={len(val_ds)}"
+          + (f" pos_weight={pos_weight.item():.2f}" if pos_weight is not None else ""))
 
     optimizer = configure_optimizer(model, args.lr, args.weight_decay)
     autocast = (torch.autocast(device_type="cuda", dtype=torch.bfloat16)
@@ -129,15 +169,17 @@ def main(argv=None):
     running_loss = []
     model.train()
     while step < args.steps:
-        for idx, lengths, y in train_loader:
+        for inputs, y in train_loader:
             if step >= args.steps:
                 break
             lr = lr_at(step, args.lr, args.warmup, args.steps, args.min_lr)
             for group in optimizer.param_groups:
                 group["lr"] = lr
-            idx, lengths, y = idx.to(device), lengths.to(device), y.to(device)
+            inputs = tuple(t.to(device) for t in inputs)
+            y = y.to(device)
             with autocast:
-                loss = F.binary_cross_entropy_with_logits(model(idx, lengths), y)
+                loss = F.binary_cross_entropy_with_logits(model(*inputs), y,
+                                                          pos_weight=pos_weight)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -147,7 +189,8 @@ def main(argv=None):
 
             if step % args.eval_every == 0 or step == args.steps:
                 val = evaluate(model, val_loader, device,
-                               max_batches=args.val_batches or None)
+                               max_batches=args.val_batches or None,
+                               pos_weight=pos_weight)
                 train_loss = sum(running_loss) / len(running_loss)
                 running_loss = []
                 print(f"step {step:6d}  lr {lr:.2e}  train {train_loss:.4f}  "

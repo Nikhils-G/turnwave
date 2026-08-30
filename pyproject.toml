@@ -9,6 +9,8 @@ dependencies = [
     "numpy>=1.26",
     "datasets>=2.19",
     "tqdm>=4.66",
+    "soundfile>=0.12",   # datasets needs it to decode the Audio column
+    "requests>=2.31",    # Sarvam TTS client
 ]
 
 [dependency-groups]

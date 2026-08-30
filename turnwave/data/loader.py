@@ -35,6 +35,8 @@ def make_collate(pad_id: int):
             idx[i, : len(b["ids"])] = torch.tensor(b["ids"], dtype=torch.long)
         lengths = torch.tensor([len(b["ids"]) for b in batch], dtype=torch.long)
         labels = torch.tensor([b["label"] for b in batch], dtype=torch.float)
-        return idx, lengths, labels
+        # (inputs_tuple, labels): the contract shared by the text, audio, and
+        # fusion tasks so the training loop can call model(*inputs) for any of them.
+        return (idx, lengths), labels
 
     return collate

@@ -49,8 +49,8 @@ def test_loss_decreases(tmp_path):
 
     losses = []
     for _ in range(15):
-        for idx, lengths, y in loader:
-            loss = F.binary_cross_entropy_with_logits(model(idx, lengths), y)
+        for inputs, y in loader:
+            loss = F.binary_cross_entropy_with_logits(model(*inputs), y)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
