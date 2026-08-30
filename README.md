@@ -55,17 +55,27 @@ because it cannot tell a confident ending from a marginal one. The model's AP of
 pipeline, which is the entire point — a turn detector has to expose a tunable
 latency/interruption tradeoff, not just a hard label.
 
-**Honest note on overfitting.** Training loss falls from 0.53 to 0.09, but
-validation loss bottoms out near step 1,250 (0.386) and then climbs steadily to
-0.649 by step 6,000 — the model begins memorizing after roughly 1,500 steps.
-Validation AP peaks at 0.895 around that point and drifts to 0.880 by the end.
-`best.pt` tracks best validation AP rather than the last step, so the saved
-checkpoint is the peak one and the reported test numbers are honest; but the
-6,000-step budget is plainly larger than 170k examples of this difficulty
-support. Two fixes, in order of value: Phase 2's acoustic branch adds signal a
-text-only model fundamentally cannot recover (prosody disambiguates the
-truncations that are accidentally complete phrases), and failing that, stronger
-regularization plus early stopping is the cheap text-only answer.
+![Training curves](docs/training_curves.png)
+
+**Honest note on overfitting.** Training loss falls from 0.526 to 0.093 while
+validation loss bottoms out at step 1,750 (0.380) and then climbs to 0.649 —
+the two curves cross around step 1,000 and never come back. The 6,000-step
+budget is plainly larger than 170k examples of this difficulty support.
+
+The interesting part is that the two panels disagree about *when* the run goes
+bad. Validation loss turns at ~1,750, but validation AP keeps improving to 0.895
+at step 3,250 and only then drifts to 0.880. That gap is not noise: cross-entropy
+punishes overconfidence, average precision only cares about ranking. The model
+becomes miscalibrated — right about the ordering, too sure of itself about the
+margin — well before it becomes wrong. For a turn detector, ranking is what a
+threshold consumes, so AP is the honest early-stopping signal here and
+`best.pt` selects on it (step 3,250, not step 6,000).
+
+Two fixes, in order of value: Phase 2's acoustic branch adds signal a text-only
+model fundamentally cannot recover — prosody disambiguates the truncations that
+are accidentally complete phrases, which is precisely the label noise capping
+this branch. Failing that, stronger regularization plus early stopping on AP is
+the cheap text-only answer.
 
 ## Quickstart
 
@@ -79,6 +89,7 @@ uv run python -m turnwave.train \
 uv run python -m turnwave.evaluate \
     --ckpt checkpoints/text_eot/best.pt \
     --tokenizer checkpoints/tokenizer/spm.model --data data/text/test.jsonl
+uv run python scripts/plot_training.py checkpoints/text_eot/log.csv
 ```
 
 CPU-only machines: add `--limit 20000 --steps 300` to `turnwave.train` for a smoke
