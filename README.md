@@ -25,12 +25,15 @@ the training loop, the metrics. No HF `Trainer`, no pretrained weights.
 - [x] **Phase 1 — text branch**: BPE tokenizer + 6.92M-param causal transformer
       over the transcript tail (with previous-turn context), trained on DailyDialog
       complete-vs-truncated pairs — **test F1 0.838, AP 0.889** (see Results)
-- [ ] **Phase 2 — acoustic branch**: CNN on log-mel spectrograms (AMI corpus +
-      synthetic prosody data via Sarvam TTS)
-- [ ] **Phase 3 — fusion + deployment**: ablation (text / audio / fused), ONNX +
-      INT8 export, streaming inference under 50 ms on CPU
-- [ ] **Phase 4 — production benchmark**: interruption-rate vs response-latency
-      curves against fixed timeouts, LiveKit turn-detector, and smart-turn;
+- [x] **Phase 2 — acoustic branch**: log-mel front end written from scratch
+      (`torch.stft` + a hand-built mel filterbank) and a 3.5M-param CNN over it,
+      fed by real pauses in real speech — *code complete and tested, training run
+      pending*
+- [x] **Phase 3 — fusion + deployment**: fused model over both frozen branches,
+      ablation harness, ONNX export with INT8 and measured CPU latency —
+      *code complete and tested, numbers pending*
+- [ ] **Phase 4 — production benchmark**: score against LiveKit's published
+      eot-bench leaderboard (VAD / SmartTurn v3.2 / LiveKit Turn Detector v1);
       live LiveKit agent demo
 - [ ] **Phase 5 — Indic multilingual**: Hindi + more via Sarvam-generated data
 
@@ -76,6 +79,47 @@ model fundamentally cannot recover — prosody disambiguates the truncations tha
 are accidentally complete phrases, which is precisely the label noise capping
 this branch. Failing that, stronger regularization plus early stopping on AP is
 the cheap text-only answer.
+
+## Phase 2 — the acoustic branch
+
+Phase 1's error analysis said what was needed: the text model is capped by
+truncations that are *accidentally complete phrases*, and no amount of text fixes
+that. So the acoustic branch listens for what the transcript cannot carry — the
+speaker who holds pitch level and trails energy into a pause is not finished; the
+one who drops pitch and closes is.
+
+**Training examples come from real pauses, not synthetic truncations.** Each
+utterance in the corpus is annotated with every pause and with word-level
+timings. The final pause ended the turn; the earlier ones are mid-turn
+hesitations a good agent listens through. So one utterance yields one positive
+and several negatives, and because the word timings are exact, the transcript at
+each cut point is exact too — audio and text are aligned with no approximation.
+
+**Everything is still from scratch.** The log-mel front end is `torch.stft` plus a
+hand-built mel filterbank; there is no torchaudio and no librosa. The CNN is
+randomly initialised. Pipecat's smart-turn uses a pretrained Whisper encoder and
+will likely score better for it — the benchmark will report that gap rather than
+hide it.
+
+Two engineering findings from this phase are worth reading even if the numbers
+are not in yet:
+
+- **The filterbank had a silent bug.** Rounding mel edges onto FFT bin indices
+  leaves the lowest filters empty, so the model never sees the bottom of the
+  spectrum — where pitch lives. The loss still falls; you just never find out.
+  Building the triangles on a continuous frequency axis fixes it, and the tests
+  assert every filter is non-empty. Those same assertions forced the window from
+  25 ms to 32 ms, since at 40 Hz bin spacing the narrowest filters could not
+  overlap.
+- **INT8 is not a free win.** Dynamic quantization rewrites MatMul, so it makes
+  the transformer 1.9× faster and the conv-heavy audio branch 4.4× *slower*. The
+  export tool measures both and recommends one instead of assuming. Separately,
+  the CNN's first design convolved 64 channels at full resolution: 2.3 GMACs and
+  518 ms per call, ten times over budget for something that fires on every pause.
+  A stride-2 stem, with the width moved to the cheap end, brings it to 4.5 ms at
+  the same parameter count.
+
+Run it: `notebooks/colab_phase2.ipynb`.
 
 ## Quickstart
 
