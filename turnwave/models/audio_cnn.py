@@ -26,7 +26,14 @@ import torch.nn as nn
 class AudioEOTConfig:
     n_mels: int = 64
     n_frames: int = 201
-    channels: tuple[int, ...] = (64, 128, 256, 384)
+    # A stride-2 stem before any wide layer. Convolving 64 channels at the full
+    # 64x201 resolution costs ~2.3 GMACs and measured 518 ms per call on one CPU
+    # thread -- ten times the latency budget for a detector that fires on every
+    # pause. Halving both axes first, and putting the width at the cheap end,
+    # brings it to ~200 MMACs for the same parameter count.
+    stem_channels: int = 24
+    stem_stride: int = 2
+    channels: tuple[int, ...] = (32, 64, 128, 256, 384)
     embed_dim: int = 256
     dropout: float = 0.2
     # SpecAugment: max width of each mask, in bins/frames. Two masks per axis.
@@ -94,7 +101,13 @@ class AudioEOTModel(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.augment = SpecAugment(cfg)
-        blocks, in_ch = [], 1
+        self.stem = nn.Sequential(
+            nn.Conv2d(1, cfg.stem_channels, kernel_size=3, stride=cfg.stem_stride,
+                      padding=1, bias=False),
+            nn.BatchNorm2d(cfg.stem_channels),
+            nn.GELU(),
+        )
+        blocks, in_ch = [], cfg.stem_channels
         for out_ch in cfg.channels:
             blocks.append(ConvBlock(in_ch, out_ch))
             in_ch = out_ch
@@ -111,7 +124,7 @@ class AudioEOTModel(nn.Module):
         # Per-example standardization: absolute loudness varies with the recording,
         # the prosodic contour is what carries the turn-taking signal.
         x = (x - x.mean(dim=(1, 2), keepdim=True)) / (x.std(dim=(1, 2), keepdim=True) + 1e-5)
-        x = self.blocks(x.unsqueeze(1))  # [B, C, mels', frames']
+        x = self.blocks(self.stem(x.unsqueeze(1)))  # [B, C, mels', frames']
         x = x.mean(dim=(2, 3))  # global average pool
         return self.dropout(self.act(self.norm(self.project(x))))
 

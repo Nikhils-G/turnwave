@@ -11,6 +11,9 @@ dependencies = [
     "tqdm>=4.66",
     "soundfile>=0.12",   # datasets needs it to decode the Audio column
     "requests>=2.31",    # Sarvam TTS client
+    "onnx>=1.16",
+    "onnxscript>=0.2",   # torch>=2.6 ONNX exporter backend
+    "onnxruntime>=1.18",  # CPU inference target for the <50 ms budget
 ]
 
 [dependency-groups]
