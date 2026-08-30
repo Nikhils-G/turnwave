@@ -146,11 +146,19 @@ class TextEOTModel(nn.Module):
             x = block(x)
         return self.norm_out(x)
 
+    def embed(self, idx: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+        """[B, T] -> [B, d_model]: the hidden state at the last real token.
+
+        Right padding plus the causal mask means pads can never influence real
+        tokens, so this is a clean summary of the sequence. Shared with the fusion
+        model, which needs the representation rather than the logit.
+        """
+        hidden = self.backbone(idx)
+        return hidden[torch.arange(idx.size(0), device=idx.device), lengths - 1]
+
     def forward(self, idx: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
         """Returns one logit per sequence: P(turn complete) after sigmoid."""
-        hidden = self.backbone(idx)
-        last = hidden[torch.arange(idx.size(0), device=idx.device), lengths - 1]
-        return self.head(last).squeeze(-1)
+        return self.head(self.embed(idx, lengths)).squeeze(-1)
 
     @property
     def num_params(self) -> int:
