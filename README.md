@@ -32,9 +32,9 @@ the training loop, the metrics. No HF `Trainer`, no pretrained weights.
 - [x] **Phase 3 — fusion + deployment**: fused model over both frozen branches,
       ablation harness, ONNX export with INT8 and measured CPU latency —
       *code complete and tested, numbers pending*
-- [ ] **Phase 4 — production benchmark**: score against LiveKit's published
-      eot-bench leaderboard (VAD / SmartTurn v3.2 / LiveKit Turn Detector v1);
-      live LiveKit agent demo
+- [x] **Phase 4 — benchmark adapter**: plugs into LiveKit's official eot-bench
+      harness, so our row is computed by their code — *adapter done, run pending*
+- [ ] **Phase 4b** — live LiveKit agent demo
 - [ ] **Phase 5 — Indic multilingual**: Hindi + more via Sarvam-generated data
 
 ## Results — Phase 1 (text branch)
@@ -120,6 +120,45 @@ are not in yet:
   the same parameter count.
 
 Run it: `notebooks/colab_phase2.ipynb`.
+
+## Benchmarking against published models
+
+`turnwave/eot_bench_adapter.py` plugs into [LiveKit's eot-bench
+harness](https://github.com/livekit/eot-bench), which publishes a leaderboard on
+real human-to-agent audio with VAD, SmartTurn v3.2 and LiveKit Turn Detector v1
+already scored.
+
+It is an adapter rather than our own metric script on purpose. eot-bench's
+definitions are subtle enough that reimplementing them from the column headings
+would produce numbers that *look* comparable and are not: a false cutoff is
+counted per mid-turn pause rather than per row, "@300 ms" is a budget on **mean
+latency** rather than a wait threshold, and latency runs from the start of the
+final silence and includes the policy's own action delay. Running their code
+removes the question. The adapter declares `score_point = 0.2` to match what
+LiveKit's own model and SmartTurn use, and reports English only — the model is
+trained on English, and claiming the other 13 languages would be reporting noise.
+
+```bash
+pip install git+https://github.com/livekit/eot-bench
+export TURNWAVE_ONNX=checkpoints/onnx/fusion_eot.onnx
+export TURNWAVE_TOKENIZER=checkpoints/tokenizer/spm.model
+eot-harness predict --path livekit/eot-bench-data --name all --split validation \
+    --adapter turnwave.eot_bench_adapter:TurnWaveAdapter --output-dir output
+```
+
+The row to fill:
+
+| model | false cutoffs @300 ms | @600 ms | latency @5% cutoff |
+|---|---|---|---|
+| VAD baseline | 55.6% | 21.7% | 1600 ms |
+| SmartTurn v3.2 | 35.2% | 14.8% | 1051 ms |
+| LiveKit Turn Detector v1 | 9.9% | 4.5% | 543 ms |
+| **TurnWave** | pending | pending | pending |
+
+Setting expectations honestly: SmartTurn starts from a pretrained Whisper encoder
+and LiveKit's model is a fine-tuned 0.5B LLM distilled from a 7B teacher. TurnWave
+is ~10M parameters trained from scratch on a fraction of the data. The point of
+the table is to measure the gap and explain it, not to win it.
 
 ## Quickstart
 
