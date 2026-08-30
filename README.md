@@ -22,9 +22,9 @@ the training loop, the metrics. No HF `Trainer`, no pretrained weights.
 ## Status
 
 - [x] **Phase 0 — scaffold**: uv project, package layout, data builders
-- [x] **Phase 1 — text branch**: BPE tokenizer + ~7M-param causal transformer over
-      the transcript tail (with previous-turn context), trained on DailyDialog
-      complete-vs-truncated pairs
+- [x] **Phase 1 — text branch**: BPE tokenizer + 6.92M-param causal transformer
+      over the transcript tail (with previous-turn context), trained on DailyDialog
+      complete-vs-truncated pairs — **test F1 0.838, AP 0.889** (see Results)
 - [ ] **Phase 2 — acoustic branch**: CNN on log-mel spectrograms (AMI corpus +
       synthetic prosody data via Sarvam TTS)
 - [ ] **Phase 3 — fusion + deployment**: ablation (text / audio / fused), ONNX +
@@ -33,6 +33,39 @@ the training loop, the metrics. No HF `Trainer`, no pretrained weights.
       curves against fixed timeouts, LiveKit turn-detector, and smart-turn;
       live LiveKit agent demo
 - [ ] **Phase 5 — Indic multilingual**: Hindi + more via Sarvam-generated data
+
+## Results — Phase 1 (text branch)
+
+Held-out test set: 15,086 examples drawn from DailyDialog's own test dialogues,
+so no utterance appears in training.
+
+| | acc | precision | recall | F1 | AP |
+|---|---|---|---|---|---|
+| majority class | 0.513 | 0.513 | 1.000 | 0.678 | 0.513 |
+| cue-word heuristic | 0.690 | 0.637 | 0.921 | 0.753 | 0.624 |
+| **TurnWave text model** | **0.832** | **0.827** | **0.849** | **0.838** | **0.889** |
+
+6.92M parameters, 6,000 steps on a Colab T4 (~50 min), batch size 256, AdamW with
+warmup + cosine decay. Best validation AP 0.895.
+
+Average precision is the metric to read here: the cue-word heuristic reaches
+decent recall by guessing "complete" for most inputs, but ranks poorly (AP 0.624)
+because it cannot tell a confident ending from a marginal one. The model's AP of
+0.889 means its probability estimates are usable as a *threshold* in a live
+pipeline, which is the entire point — a turn detector has to expose a tunable
+latency/interruption tradeoff, not just a hard label.
+
+**Honest note on overfitting.** Training loss falls from 0.53 to 0.09, but
+validation loss bottoms out near step 1,250 (0.386) and then climbs steadily to
+0.649 by step 6,000 — the model begins memorizing after roughly 1,500 steps.
+Validation AP peaks at 0.895 around that point and drifts to 0.880 by the end.
+`best.pt` tracks best validation AP rather than the last step, so the saved
+checkpoint is the peak one and the reported test numbers are honest; but the
+6,000-step budget is plainly larger than 170k examples of this difficulty
+support. Two fixes, in order of value: Phase 2's acoustic branch adds signal a
+text-only model fundamentally cannot recover (prosody disambiguates the
+truncations that are accidentally complete phrases), and failing that, stronger
+regularization plus early stopping is the cheap text-only answer.
 
 ## Quickstart
 
