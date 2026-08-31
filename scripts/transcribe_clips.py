@@ -13,8 +13,12 @@ Two properties matter more than speed:
 * **Measured before committed.** --measure transcribes a small sample and reports
   clips/minute, so the scale is chosen from evidence instead of a guessed timeline.
 
-    python scripts/transcribe_clips.py --measure 200
-    python scripts/transcribe_clips.py --max-clips 40000 --out transcripts.jsonl
+    python scripts/transcribe_clips.py --config eng --measure 200
+    python scripts/transcribe_clips.py --config eng --max-clips 40000 \
+        --out transcripts_train.jsonl
+    python scripts/transcribe_clips.py \
+        --dataset pipecat-ai/smart-turn-data-v3.2-test --languages eng \
+        --max-clips 9000 --out transcripts_eval.jsonl
 """
 
 import argparse
@@ -68,7 +72,12 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", type=Path, default=Path("transcripts.jsonl"))
     ap.add_argument("--dataset", default=DEFAULT_DATASET)
-    ap.add_argument("--config", default=DEFAULT_CONFIG)
+    ap.add_argument("--config", default=None,
+                    help=f"HF config, e.g. {DEFAULT_CONFIG!r} for the English "
+                         "derivative; omit for repos with a single default config")
+    ap.add_argument("--languages", nargs="*", default=None,
+                    help="ISO-639-3 filter, e.g. eng — skip other rows without "
+                         "spending GPU on them")
     ap.add_argument("--split", default="train")
     ap.add_argument("--model", default="base.en")
     ap.add_argument("--device", default="cuda")
@@ -86,7 +95,9 @@ def main(argv=None):
         print(f"resuming: {len(done)} clips already transcribed in {args.out}")
 
     model = build_model(args.model, args.device)
-    ds = load_dataset(args.dataset, args.config, split=args.split, streaming=True)
+    ds = (load_dataset(args.dataset, args.config, split=args.split, streaming=True)
+          if args.config else
+          load_dataset(args.dataset, split=args.split, streaming=True))
     ds = ds.cast_column("audio", Audio(decode=False))
 
     target = args.measure or args.max_clips
@@ -99,6 +110,8 @@ def main(argv=None):
                 break
             if args.measure and seen >= target:
                 break
+            if args.languages and (row.get("language") or "").lower() not in args.languages:
+                continue
             clip_id = row.get("id") or ""
             if clip_id in done:
                 continue

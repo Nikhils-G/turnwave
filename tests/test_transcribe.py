@@ -54,3 +54,13 @@ def test_wrong_sample_rate_yields_empty():
     import numpy as np
 
     assert transcribe_clips.transcribe_array(Boom(), np.zeros(8000), 8000) == ""
+
+
+def test_language_filter_is_available():
+    """Eval clips come from the multilingual v3.2 test repo; without a filter the
+    GPU would transcribe ~75% non-English rows that the cache build then drops."""
+    import argparse
+
+    # smoke the CLI surface rather than the network path
+    ap_source = open(transcribe_clips.__file__).read()
+    assert "--languages" in ap_source and 'row.get("language")' in ap_source
