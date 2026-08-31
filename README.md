@@ -2,7 +2,7 @@
 
 [![tests](https://github.com/Nikhils-G/turnwave/actions/workflows/tests.yml/badge.svg)](https://github.com/Nikhils-G/turnwave/actions/workflows/tests.yml)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![models](https://img.shields.io/badge/%F0%9F%A4%97-models-yellow.svg)](https://huggingface.co/Nikhils-G/turnwave)
+[![models](https://img.shields.io/badge/%F0%9F%A4%97-models-yellow.svg)](https://huggingface.co/Nikhil-09/turnwave)
 
 **End-of-turn detection for voice agents, trained from scratch.**
 

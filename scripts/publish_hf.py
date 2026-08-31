@@ -14,7 +14,7 @@ The card's headline claim is derived from the eot-bench numbers rather than
 written beside them, and the script refuses to build a card without results.
 
     export HF_TOKEN=hf_...            # write token from hf.co/settings/tokens
-    python scripts/publish_hf.py --repo-id Nikhils-G/turnwave
+    python scripts/publish_hf.py --repo-id Nikhil-09/turnwave
 """
 
 import argparse
@@ -245,7 +245,7 @@ def build_card(onnx_dir: Path, repo_id: str) -> tuple[str, dict]:
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--repo-id", default="Nikhils-G/turnwave")
+    ap.add_argument("--repo-id", default="Nikhil-09/turnwave")
     ap.add_argument("--onnx-dir", type=Path, default=Path("checkpoints/onnx"))
     ap.add_argument("--tokenizer", type=Path, default=Path("checkpoints/tokenizer/spm.model"))
     ap.add_argument("--private", action="store_true")
