@@ -27,9 +27,9 @@ the training loop, the metrics. No HF `Trainer`, no pretrained weights.
       complete-vs-truncated pairs — **test F1 0.847, AP 0.888** (see Results)
 - [x] **Phase 2 — acoustic branch**: log-mel front end written from scratch
       (`torch.stft` + a hand-built mel filterbank) and a 3.49M-param CNN over it,
-      trained on real pauses in real speech — **test AP 0.741**
+      trained on real pauses in real speech — **test AP 0.938**
 - [x] **Phase 3 — fusion + deployment**: fused model over both frozen branches —
-      **test AP 0.767, beating both branches**; 9.1 ms CPU inference
+      **test AP 0.945, beating both branches**; 9.4 ms CPU inference
 - [x] **Phase 4 — benchmark adapter**: plugs into LiveKit's official eot-bench
       harness, so our row is computed by their code — *adapter done, run pending*
 - [ ] **Phase 4b** — live LiveKit agent demo
@@ -85,20 +85,19 @@ the cheap text-only answer.
 
 ## Results — the ablation
 
-6,000 held-out examples (3,390 turn-final, 2,610 mid-turn), every model scored on
-**the same examples**, so each row differs only by what the model can see:
+7,817 held-out examples, every model scored on **the same examples**, so each row
+differs only by what the model can see:
 
 | | acc | precision | recall | F1 | AP |
 |---|---|---|---|---|---|
-| majority class | 0.565 | 0.565 | 1.000 | 0.722 | 0.565 |
-| cue-word heuristic | 0.544 | 0.564 | 0.853 | 0.679 | 0.565 |
-| text only | 0.595 | 0.611 | 0.780 | 0.685 | 0.633 |
-| audio only | 0.644 | 0.697 | 0.653 | 0.674 | 0.741 |
-| **fused (text + audio)** | **0.669** | **0.709** | **0.702** | **0.706** | **0.767** |
+| majority class | 0.640 | 0.640 | 1.000 | 0.780 | 0.636 |
+| cue-word heuristic | 0.582 | 0.627 | 0.853 | 0.723 | 0.625 |
+| text only | 0.598 | 0.670 | 0.732 | 0.699 | 0.683 |
+| audio only | 0.770 | 0.907 | 0.714 | 0.799 | 0.938 |
+| **fused (text + audio)** | **0.802** | **0.888** | **0.791** | **0.837** | **0.945** |
 
-**Fusion beats both branches** — +0.026 AP over audio alone, +0.134 over text
-alone. That is the claim this project was built to test, and it held: prosody
-carries end-of-turn information the transcript does not, and the two combine.
+**Fusion beats both branches.** That is the claim the project was built to test,
+and it held twice — once at AP 0.767 in the first run, again here at 0.945.
 
 ![Acoustic branch training](docs/audio_curves.png)
 
@@ -106,31 +105,46 @@ Deployment, measured on one CPU thread:
 
 | model | fp32 | INT8 | ship | size |
 |---|---|---|---|---|
-| text | 3.64 ms | **3.11 ms** | INT8 | 7.2 MB |
-| audio | **4.60 ms** | 31.24 ms | fp32 | 14.0 MB |
-| fused | **9.10 ms** | 35.35 ms | fp32 | 42.4 MB |
+| text | 6.10 ms | **5.02 ms** | INT8 | 7.2 MB |
+| audio | **4.52 ms** | 33.05 ms | fp32 | 14.0 MB |
+| fused | **9.35 ms** | 37.02 ms | fp32 | 42.4 MB |
 
-The fused detector answers in **9.1 ms**, five times inside the 50 ms budget, with
-ONNX-vs-PyTorch parity at 1.2e-07.
+The fused detector answers in **9.4 ms** with ONNX-vs-PyTorch parity at 2.4e-07.
+End to end on this laptop's CPU — log-mel extraction, tokenization and inference —
+p95 is **47 ms**, inside the 50 ms budget.
 
-### What the numbers say that the table does not
+INT8 is not applied blindly. Dynamic quantization rewrites MatMul, so it speeds up
+the transformer (1.2×) and *slows down* both conv-containing graphs (7.3× and 4.0×
+worse). The export tool measures both variants and recommends one.
 
-**The audio branch is under-trained, not overfit.** Its best AP landed on the
-final step (4,000) with train and validation loss almost together (0.522 vs
-0.550) — the opposite of Phase 1's text branch, which diverged after step 1,750.
-The CNN had not stopped learning when the budget ran out, so more steps and more
-data are the obvious next lever. The 0.741 here is a floor, not a ceiling.
+### Reading these numbers honestly
 
-**Text scores 0.633 here but 0.889 on DailyDialog, and that gap is a property of
-the data, not a regression.** This corpus is isolated utterances: the `messages`
-field holds a single user turn, so the text branch runs with no dialogue context,
-while on DailyDialog it had the previous turn to condition on. Reporting only the
-0.889 would be flattering the model with a different task. The honest reading is
-that a text-only detector degrades sharply without conversational context, which
-is exactly the condition a fused model is meant to cover.
+**AP went from 0.767 to 0.945 between runs, and that is not a like-for-like
+improvement.** Three things changed at once:
 
-**Audio beat text on this data (0.741 vs 0.633)** — the reverse of what the
-project assumed at the outset, and a direct consequence of the point above.
+1. The training set doubled — 60k examples from 33k conversations, to 120k from 76k.
+2. The audio budget doubled, 4,000 steps to 8,000 (stopped at 4,250 when the free
+   Colab allowance ran out; AP had already plateaued at 0.932).
+3. **The task itself got easier.** Moving the decision point 0.2 s into each pause
+   required dropping pauses shorter than that, and those very short pauses were the
+   hardest negatives — barely pauses at all. The test set changed with the training
+   set.
+
+Point 3 means the two numbers are not directly comparable. The defensible claim is
+"AP ~0.94 on the eot-bench-aligned task", not "+0.18 improvement". The eot-bench
+run is what settles it, because that is scored on data we did not build.
+
+**Fusion's margin narrowed as the audio branch got stronger** — +0.026 AP over the
+best branch in the first run, +0.007 here. On F1 the gain is larger (+0.038), since
+fusion trades a little precision for markedly better recall. A fused model earns
+less when one branch is already carrying most of the signal.
+
+**Audio now clearly beats text** (AP 0.938 vs 0.683), the reverse of the project's
+opening assumption. The text branch scores 0.888 on DailyDialog and 0.683 here
+because this corpus is isolated utterances with no dialogue context — it is running
+without the previous turn it was designed to condition on. That is a limitation of
+the evaluation data, not a regression, and it is precisely the condition a fused
+model is meant to cover.
 
 ## Phase 2 — the acoustic branch
 
