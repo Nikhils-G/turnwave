@@ -23,14 +23,15 @@ import torch
 from datasets import Audio, load_dataset
 from tqdm import tqdm
 
-from turnwave.data.eot_audio import iter_cuts, slice_tail
+from turnwave.data.eot_audio import DEFAULT_CUT_OFFSET, iter_cuts, slice_tail
 from turnwave.data.features import LogMel, MelConfig
 
 DEFAULT_DATASET = "Scicom-intl/semantic-vad-eot"
 
 
 def build_split(dataset: str, config: str, split: str, out_dir: Path, max_examples: int,
-                mel: LogMel, quiet: bool = False) -> dict:
+                mel: LogMel, cut_offset: float = DEFAULT_CUT_OFFSET,
+                quiet: bool = False) -> dict:
     cfg = mel.cfg
     out_dir.mkdir(parents=True, exist_ok=True)
     feature_path = out_dir / f"{split}.f16.npy"
@@ -54,7 +55,7 @@ def build_split(dataset: str, config: str, split: str, out_dir: Path, max_exampl
         for row in ds:
             if written >= max_examples:
                 break
-            cuts = list(iter_cuts(row))
+            cuts = list(iter_cuts(row, cut_offset_seconds=cut_offset))
             if not cuts:
                 continue
             try:
@@ -95,6 +96,9 @@ def main(argv=None):
     ap.add_argument("--config", default="en")
     ap.add_argument("--max-examples", type=int, default=60000, help="cap for the train split")
     ap.add_argument("--max-eval-examples", type=int, default=6000)
+    ap.add_argument("--cut-offset", type=float, default=DEFAULT_CUT_OFFSET,
+                    help="seconds into each pause to place the decision point; "
+                         "0.2 matches eot-bench and real endpointing")
     ap.add_argument("--splits", nargs="+", default=["train", "validation", "test"])
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args(argv)
@@ -104,10 +108,11 @@ def main(argv=None):
     for split in args.splits:
         cap = args.max_examples if split == "train" else args.max_eval_examples
         summaries.append(build_split(args.dataset, args.config, split, args.out, cap,
-                                     mel, quiet=args.quiet))
+                                     mel, cut_offset=args.cut_offset, quiet=args.quiet))
 
     manifest = {
         "dataset": args.dataset, "config": args.config,
+        "cut_offset_seconds": args.cut_offset,
         "mel": {k: getattr(mel.cfg, k) for k in
                 ("sample_rate", "n_fft", "hop_length", "n_mels", "f_min", "f_max",
                  "window_seconds", "log_floor")},

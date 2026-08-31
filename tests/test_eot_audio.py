@@ -1,6 +1,6 @@
 import pytest
 
-from turnwave.data.eot_audio import Cut, iter_cuts, words_before
+from turnwave.data.eot_audio import DEFAULT_CUT_OFFSET, Cut, iter_cuts, words_before
 
 WORDS = [
     {"word": "lots", "start": 0.11, "end": 0.70},
@@ -42,10 +42,56 @@ def test_words_before_is_asr_normalized():
 
 
 def test_one_row_yields_one_positive_and_the_rest_negative():
+    """This fixture is a real row: 5 pauses, but the 0.11 s one at 6.54 is too
+    short to hold the decision point, so it yields 3 negatives and 1 positive."""
     cuts = list(iter_cuts(ROW))
-    assert len(cuts) == 5
-    assert [c.label for c in cuts] == [0, 0, 0, 0, 1]
+    assert [c.label for c in cuts] == [0, 0, 0, 1]
     assert sum(c.is_final for c in cuts) == 1
+
+
+def test_offset_zero_keeps_every_span():
+    """Without an offset there is nothing to reach past, so the short pause at
+    6.54 s becomes usable again -- the filter is a consequence of the offset,
+    not an independent quality rule."""
+    assert len(list(iter_cuts(ROW, cut_offset_seconds=0.0))) == 5
+
+
+def test_cut_lands_inside_the_pause_not_at_its_start():
+    """eot-bench scores at 0.2 s of silence; training must use the same window."""
+    cuts = list(iter_cuts(ROW, cut_offset_seconds=0.2))
+    assert cuts[0].cut_seconds == pytest.approx(2.02 + 0.2)
+    assert cuts[-1].cut_seconds == pytest.approx(9.31 + 0.2)
+
+
+def test_offset_is_configurable_and_zero_means_the_pause_start():
+    cuts = list(iter_cuts(ROW, cut_offset_seconds=0.0))
+    assert cuts[0].cut_seconds == pytest.approx(2.02)
+
+
+def test_span_shorter_than_the_offset_is_dropped():
+    """Cutting 0.2 s into a 0.05 s pause would reach past the next word's start,
+    leaking future speech into a negative example."""
+    row = {
+        "silence_spans": [{"start": 2.02, "end": 2.07}, {"start": 9.31, "end": 9.81}],
+        "words": WORDS,
+    }
+    cuts = list(iter_cuts(row, cut_offset_seconds=0.2))
+    assert [c.label for c in cuts] == [1]
+
+
+def test_no_negative_reveals_the_following_word():
+    """The invariant the short-span filter exists to guarantee."""
+    row = {
+        "silence_spans": [{"start": 2.02, "end": 2.38}, {"start": 5.04, "end": 5.09},
+                          {"start": 9.31, "end": 9.81}],
+        "words": WORDS,
+    }
+    for cut in iter_cuts(row, cut_offset_seconds=DEFAULT_CUT_OFFSET):
+        started_after = [w for w in WORDS if w["start"] >= cut.cut_seconds]
+        for word in started_after:
+            assert word["word"] not in cut.text.split(), (
+                f"'{word['word']}' starts at {word['start']} but appears in a cut "
+                f"taken at {cut.cut_seconds}")
 
 
 def test_cuts_are_time_ordered_and_text_grows():
@@ -58,7 +104,7 @@ def test_cuts_are_time_ordered_and_text_grows():
 def test_spans_are_sorted_before_labelling():
     """The final span by time is the positive even if the input order is scrambled."""
     shuffled = dict(ROW, silence_spans=list(reversed(ROW["silence_spans"])))
-    cuts = list(iter_cuts(shuffled))
+    cuts = list(iter_cuts(shuffled, cut_offset_seconds=0.0))
     assert cuts[-1].label == 1
     assert cuts[-1].cut_seconds == pytest.approx(9.31)
 
@@ -69,8 +115,9 @@ def test_row_with_a_single_pause_yields_only_a_positive():
     assert [c.label for c in cuts] == [1]
 
 
-def test_short_final_silence_is_rejected():
-    """A 0.05 s trailing gap is not evidence the turn ended."""
+def test_short_final_silence_rejects_the_row():
+    """A 0.05 s trailing gap is not evidence the turn ended, and without a usable
+    positive the row would teach only that this speaker never finishes."""
     row = dict(ROW, silence_spans=[{"start": 2.02, "end": 2.38}, {"start": 9.31, "end": 9.36}])
     assert list(iter_cuts(row)) == []
 
@@ -82,7 +129,7 @@ def test_overlong_pause_rejects_the_row():
 
 def test_cut_before_any_word_is_skipped():
     """No transcript yet means nothing for the text branch to consume."""
-    row = dict(ROW, silence_spans=[{"start": 0.05, "end": 0.30}, {"start": 9.31, "end": 9.81}])
+    row = dict(ROW, silence_spans=[{"start": 0.02, "end": 0.30}, {"start": 9.31, "end": 9.81}])
     labels = [c.label for c in iter_cuts(row)]
     assert labels == [1]
 
