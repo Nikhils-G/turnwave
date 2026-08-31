@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8", "matplotlib>=3.8"]
+dev = ["pytest>=8", "matplotlib>=3.8", "huggingface-hub>=0.24"]
 
 # CPU-only torch locally; Colab uses its own preinstalled CUDA build.
 [[tool.uv.index]]

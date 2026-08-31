@@ -1659,6 +1659,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "huggingface-hub" },
     { name = "matplotlib" },
     { name = "pytest" },
 ]
@@ -1680,6 +1681,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "huggingface-hub", specifier = ">=0.24" },
     { name = "matplotlib", specifier = ">=3.8" },
     { name = "pytest", specifier = ">=8" },
 ]
