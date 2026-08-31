@@ -1,9 +1,17 @@
 """Publish the exported models to the Hugging Face Hub.
 
-Without this the repo is code you would have to train from scratch to try. It
-uploads the *shipping* variant of each branch — chosen by the measured latency in
-each export report, not by assuming INT8 is always better — plus the tokenizer,
-the configs, and a model card carrying the results and the limitations.
+Without this the repo is code you would have to train from scratch to try.
+
+Licensing is per model, not per repo, because the training corpora differ and
+saying otherwise on a public artifact would be a false claim:
+
+* the Phase 5 acoustic branch trains only on smart-turn conversational clips,
+* the Phase 4 acoustic branch only on a CC BY 4.0 corpus,
+* the text and fusion models also use DailyDialog, which is **CC BY-NC-SA 4.0** —
+  non-commercial and share-alike, so those two cannot be offered as Apache-2.0.
+
+The card's headline claim is derived from the eot-bench numbers rather than
+written beside them, and the script refuses to build a card without results.
 
     export HF_TOKEN=hf_...            # write token from hf.co/settings/tokens
     python scripts/publish_hf.py --repo-id Nikhils-G/turnwave
@@ -14,49 +22,105 @@ import json
 import os
 from pathlib import Path
 
+# The eot-bench figures this card reports, and the published baselines they sit
+# against. Sourced from output/.../comparison/report.md and LiveKit's leaderboard.
+BENCH = {
+    "cutoff_300": 42.1, "cutoff_600": 17.2, "latency_5pct": 1195,
+    "auc": 0.770, "ap": 0.602,
+    "baselines": [
+        ("VAD baseline", 55.6, 21.7, 1600),
+        ("TurnWave audio branch (this model)", 42.1, 17.2, 1195),
+        ("SmartTurn v3.2", 35.2, 14.8, 1051),
+        ("LiveKit Turn Detector v1", 9.9, 4.5, 543),
+    ],
+}
+
+# filename -> (source checkpoint key, licence, why)
+MODELS = {
+    "audio_eot_v2.onnx": ("audio_eot_v2", "apache-2.0",
+                          "trained on smart-turn conversational clips"),
+    "audio_eot.onnx": ("audio_eot", "cc-by-4.0",
+                       "Phase 4; trained on semantic-vad-eot (CC BY 4.0)"),
+    "text_eot.int8.onnx": ("text_eot", "cc-by-nc-sa-4.0",
+                           "trained on DailyDialog (CC BY-NC-SA 4.0) — non-commercial"),
+    "fusion_eot.onnx": ("fusion_eot", "cc-by-nc-sa-4.0",
+                        "contains the text branch, so it inherits the same terms"),
+}
+
 CARD = """---
 license: apache-2.0
+license_name: mixed-per-model
+license_link: LICENSE
 library_name: onnx
 pipeline_tag: audio-classification
+language:
+  - en
 tags:
   - end-of-turn-detection
   - turn-taking
   - voice-agents
   - speech
   - onnx
+  - from-scratch
+datasets:
+  - pipecat-ai/smart-turn-data-v3.2-train
+  - Scicom-intl/semantic-vad-eot
+  - li2017dailydialog/daily_dialog
+metrics:
+  - roc_auc
+  - average_precision
+model-index:
+  - name: TurnWave
+    results:
+      - task:
+          type: audio-classification
+          name: End-of-turn detection
+        dataset:
+          type: livekit/eot-bench-data
+          name: eot-bench (English)
+          split: validation
+        metrics:
+          - type: roc_auc
+            value: {auc}
+            name: AUC
+          - type: average_precision
+            value: {ap}
+            name: Average precision
+          - type: false_cutoff_rate
+            value: {cutoff_300}
+            name: False cutoffs @300ms latency budget (%)
+          - type: false_cutoff_rate
+            value: {cutoff_600}
+            name: False cutoffs @600ms latency budget (%)
 ---
 
 # TurnWave — end-of-turn detection for voice agents
 
-Decides whether a caller has **finished speaking** or is merely pausing, so a
-voice agent neither interrupts them nor leaves an awkward silence. It replaces
-the fixed 300–700 ms silence timeout that most pipelines still use.
+Decides whether a caller has **finished speaking** or is only pausing, so a voice
+agent neither interrupts them nor leaves an awkward silence. It replaces the fixed
+300–700 ms silence timeout most pipelines still use.
 
-Two branches, both **trained from scratch** — no pretrained weights anywhere:
-
-- **Text**: a 6.92M-param causal transformer (RoPE, RMSNorm, SwiGLU, causal
-  self-attention) over the transcript tail. Judges semantic completeness.
-- **Audio**: a 3.49M-param CNN over log-mel spectrograms. Hears prosody — a
-  speaker who intends to continue holds pitch level and trails energy into the
-  pause; a finished speaker drops pitch and closes.
-- **Fused**: a head over both. Each branch alone sees half the evidence.
-
-The log-mel front end is also hand-written (`torch.stft` plus a mel filterbank),
+**Trained from scratch — no pretrained weights anywhere.** A causal transformer
+(RoPE, RMSNorm, SwiGLU) over the transcript tail, and a CNN over log-mel
+spectrograms for prosody. Even the log-mel front end is hand-built on `torch.stft`,
 so there is no torchaudio or librosa dependency.
 
-## Results
+## Benchmark
 
-{results_table}
+Scored by [LiveKit's eot-bench](https://github.com/livekit/eot-bench) harness on
+real human-to-agent conversation, using their code and published baselines. Lower
+is better; **bold marks the best per column.**
 
-{results_claim}
+{bench_table}
 
-## Latency (one CPU thread)
+{claim}
 
-{latency_table}
+## Models in this repo
 
-INT8 is not applied blindly. Dynamic quantization rewrites MatMul, so it speeds
-up the transformer and *slows down* the conv-heavy branches; the shipping variant
-for each model is whichever measured faster.
+{model_table}
+
+Each model's licence follows its training data, so they differ. `audio_eot_v2` is
+the one the benchmark above measures and the one to use.
 
 ## Usage
 
@@ -64,92 +128,119 @@ for each model is whichever measured faster.
 from huggingface_hub import hf_hub_download
 from turnwave.infer import TurnDetector   # pip install git+https://github.com/Nikhils-G/turnwave
 
-detector = TurnDetector(
-    hf_hub_download("{repo_id}", "fusion_eot.onnx"),
-    tokenizer=hf_hub_download("{repo_id}", "spm.model"),
-)
-probability = detector.predict(audio=wav_16k, text="i want a large pepperoni and")
-if probability > 0.5:
+detector = TurnDetector(hf_hub_download("{repo_id}", "audio_eot_v2.onnx"))
+if detector.predict(audio=wav_16k) > 0.5:
     respond()
 ```
 
-Audio is 16 kHz mono; the model reads the last 2 seconds ending at the decision
-point, which sits 0.2 s into the pause — where a real agent decides, and where
-LiveKit's eot-bench scores.
+16 kHz mono. The model reads the last 2 seconds ending at the decision point, which
+sits 0.2 s into the pause — where a live agent decides, and where eot-bench scores.
+
+{latency_table}
+
+INT8 is not applied blindly: dynamic quantization rewrites MatMul, so it speeds up
+the transformer and *slows down* the conv-heavy branches. Each model ships whichever
+variant measured faster.
+
+## What this project found
+
+The first version of this model scored **AP 0.945** on its own held-out test set and
+**AUC 0.563** on eot-bench — barely above random. The policy sweep chose thresholds
+of 0.0 and 1.0, meaning *ignore the model entirely*.
+
+The cause was the training corpus, not the architecture. It derived from a dataset
+whose own card declares `task_categories: [text-to-speech]` — read speech, whose
+pauses are reading hesitations rather than conversational turn-yields. The model had
+learned *"has this sentence finished being read aloud."*
+
+Retraining on conversational data, changing nothing else, lifted AUC to **0.770**.
+The in-domain score could never have revealed this; only a benchmark on data we did
+not build could.
 
 ## Limitations
 
-- **English only.** Trained on English; other languages are untested.
-- **Trained on isolated utterances.** The corpus has no dialogue context, so the
-  text branch runs without a previous turn and degrades relative to its
-  DailyDialog performance (AP 0.888 there vs {text_ap} here). A text-only
-  detector needs conversational context; this is one reason the fused model
-  matters.
-- **The acoustic branch is small and trained from scratch**, against competitors
-  that start from pretrained speech encoders. The gap is expected and reported
-  rather than hidden.
+- **English only.** Other languages are in the training data but untested here.
+- **Behind the production models**, and not a fair comparison: SmartTurn starts from
+  a pretrained Whisper encoder, LiveKit's is a fine-tuned 0.5B LLM distilled from a
+  7B teacher. This is 3.49M parameters from random initialisation.
+- **The fusion model is stale.** It was trained on the read-speech corpus, which the
+  benchmark showed to be the wrong task. The conversational corpus has no
+  transcripts, so retraining fusion needs ASR first.
+- **Non-commercial models included.** The text and fusion models derive from
+  DailyDialog (CC BY-NC-SA 4.0). Only the audio branches are permissively licensed.
 
-## Training data
-
-- [Scicom-intl/semantic-vad-eot](https://huggingface.co/datasets/Scicom-intl/semantic-vad-eot) (CC-BY-4.0) — audio with word-level timings and pause spans
-- [DailyDialog](https://huggingface.co/datasets/li2017dailydialog/daily_dialog) — text branch pretraining pairs
-
-Code, training scripts and the full write-up: **https://github.com/Nikhils-G/turnwave**
+Code, training scripts, and the full write-up: **https://github.com/Nikhils-G/turnwave**
 """
-
-BRANCHES = ("text_eot", "audio_eot", "fusion_eot")
 
 
 def shipping_file(onnx_dir: Path, name: str) -> Path:
-    """The variant the export report measured as faster."""
+    """The variant the export report measured as faster, resolved locally."""
     report_path = onnx_dir / f"{name}.export.json"
     if not report_path.exists():
         raise SystemExit(f"missing {report_path} — run turnwave.export first")
     report = json.loads(report_path.read_text())
-    return Path(report[report["recommended"]]["path"])
+    return onnx_dir / Path(report[report["recommended"]]["path"]).name
 
 
-FUSION_WINS = ("Fusion beats both branches. That is the claim the project was built "
-               "to test:\nprosody carries end-of-turn information the transcript does not.")
-FUSION_LOSES = ("On this evaluation the fused model did **not** beat the best single "
-                "branch.\nThe number is reported as measured.")
+def bench_table() -> str:
+    rows = ["| model | false cutoffs @300 ms ↓ | @600 ms ↓ | latency @5% cutoff ↓ |",
+            "|---|---|---|---|"]
+    best = {1: min(r[1] for r in BENCH["baselines"]),
+            2: min(r[2] for r in BENCH["baselines"]),
+            3: min(r[3] for r in BENCH["baselines"])}
+    for name, c300, c600, lat in BENCH["baselines"]:
+        cells = [f"**{c300}%**" if c300 == best[1] else f"{c300}%",
+                 f"**{c600}%**" if c600 == best[2] else f"{c600}%",
+                 f"**{lat} ms**" if lat == best[3] else f"{lat} ms"]
+        label = f"**{name}**" if "this model" in name else name
+        rows.append(f"| {label} | {' | '.join(cells)} |")
+    return "\n".join(rows)
 
 
-def build_tables(onnx_dir: Path, ablation: Path | None) -> tuple[str, str, str, str]:
-    latency_rows = ["| model | variant | latency | size |", "|---|---|---|---|"]
-    for name in BRANCHES:
-        report = json.loads((onnx_dir / f"{name}.export.json").read_text())
+def model_table(onnx_dir: Path) -> tuple[str, dict]:
+    rows = ["| file | licence | training data |", "|---|---|---|"]
+    uploads = {}
+    for filename, (key, licence, why) in MODELS.items():
+        path = onnx_dir / filename
+        if not path.exists():
+            # Fall back to whichever variant the export report recommends. A
+            # model that was never exported is skipped rather than fatal, so a
+            # partial publish works; the empty case is caught below.
+            if not (onnx_dir / f"{key}.export.json").exists():
+                continue
+            path = shipping_file(onnx_dir, key)
+            if not path.exists():
+                continue
+        uploads[filename] = path
+        rows.append(f"| `{filename}` | {licence} | {why} |")
+    if not uploads:
+        raise SystemExit(f"no exported models found in {onnx_dir}")
+    return "\n".join(rows), uploads
+
+
+def latency_table(onnx_dir: Path) -> str:
+    rows = ["| model | variant | CPU latency | size |", "|---|---|---|---|"]
+    for key in ("audio_eot_v2", "audio_eot", "text_eot", "fusion_eot"):
+        report_path = onnx_dir / f"{key}.export.json"
+        if not report_path.exists():
+            continue
+        report = json.loads(report_path.read_text())
         best = report[report["recommended"]]
-        latency_rows.append(f"| {name.replace('_eot', '')} | {report['recommended']} | "
-                            f"{best['latency_ms']:.2f} ms | {best['mb']:.1f} MB |")
+        rows.append(f"| {key} | {report['recommended']} | {best['latency_ms']:.2f} ms | "
+                    f"{best['mb']:.1f} MB |")
+    return "\n".join(rows)
 
-    if not (ablation and ablation.exists()):
-        raise SystemExit(
-            f"no ablation results at {ablation}. A model card whose Results section "
-            f"says 'not available' while the text claims fusion wins is worse than no "
-            f"card at all.\nRun: python -m turnwave.ablate ... --out {ablation}")
 
-    data = json.loads(ablation.read_text())
-    if True:
-        rows = ["| model | acc | precision | recall | F1 | AP |", "|---|---|---|---|---|---|"]
-        text_ap = "n/a"
-        for label, m in data["results"].items():
-            emphasis = "**" if label.startswith("fused") else ""
-            rows.append(f"| {emphasis}{label}{emphasis} | {m['accuracy']:.3f} | "
-                        f"{m['precision']:.3f} | {m['recall']:.3f} | {m['f1']:.3f} | "
-                        f"{emphasis}{m['ap']:.3f}{emphasis} |")
-            if label == "text only":
-                text_ap = f"{m['ap']:.3f}"
-        results = f"Held-out test set, {data['examples']:,} examples:\n\n" + "\n".join(rows)
-
-    # The claim is derived from the numbers, never asserted alongside them.
-    scores = {label: m["ap"] for label, m in data["results"].items()}
-    fused = max((ap for label, ap in scores.items() if label.startswith("fused")), default=None)
-    best_single = max((ap for label, ap in scores.items()
-                       if label in ("text only", "audio only")), default=None)
-    claim = FUSION_WINS if (fused is not None and best_single is not None
-                            and fused > best_single) else FUSION_LOSES
-    return results, "\n".join(latency_rows), text_ap, claim
+def build_card(onnx_dir: Path, repo_id: str) -> tuple[str, dict]:
+    models, uploads = model_table(onnx_dir)
+    claim = ("TurnWave beats the VAD baseline on every metric the harness reports."
+             if BENCH["cutoff_300"] < BENCH["baselines"][0][1]
+             else "TurnWave does not beat the VAD baseline; the numbers are as measured.")
+    card = CARD.format(bench_table=bench_table(), model_table=models,
+                       latency_table=latency_table(onnx_dir), claim=claim,
+                       repo_id=repo_id, **{k: v for k, v in BENCH.items()
+                                           if k != "baselines"})
+    return card, uploads
 
 
 def main(argv=None):
@@ -157,24 +248,19 @@ def main(argv=None):
     ap.add_argument("--repo-id", default="Nikhils-G/turnwave")
     ap.add_argument("--onnx-dir", type=Path, default=Path("checkpoints/onnx"))
     ap.add_argument("--tokenizer", type=Path, default=Path("checkpoints/tokenizer/spm.model"))
-    ap.add_argument("--ablation", type=Path, default=Path("docs/ablation.json"))
     ap.add_argument("--private", action="store_true")
     ap.add_argument("--dry-run", action="store_true", help="write the card locally, upload nothing")
     args = ap.parse_args(argv)
 
-    results_table, latency_table, text_ap, claim = build_tables(args.onnx_dir, args.ablation)
-    card = CARD.format(results_table=results_table, latency_table=latency_table,
-                       results_claim=claim, repo_id=args.repo_id, text_ap=text_ap)
-
-    uploads = {shipping_file(args.onnx_dir, name).name: shipping_file(args.onnx_dir, name)
-               for name in BRANCHES}
-    uploads[args.tokenizer.name] = args.tokenizer
+    card, uploads = build_card(args.onnx_dir, args.repo_id)
+    if args.tokenizer.exists():
+        uploads[args.tokenizer.name] = args.tokenizer
 
     if args.dry_run:
         Path("docs/model_card.md").write_text(card)
         print("wrote docs/model_card.md")
         for name, path in uploads.items():
-            print(f"  would upload {name:24s} <- {path} ({path.stat().st_size/1e6:.1f} MB)")
+            print(f"  would upload {name:24s} {path.stat().st_size/1e6:6.1f} MB")
         return
 
     token = os.environ.get("HF_TOKEN")
@@ -186,6 +272,8 @@ def main(argv=None):
     api = HfApi(token=token)
     api.create_repo(args.repo_id, repo_type="model", private=args.private, exist_ok=True)
     api.upload_file(path_or_fileobj=card.encode(), path_in_repo="README.md",
+                    repo_id=args.repo_id, repo_type="model")
+    api.upload_file(path_or_fileobj="LICENSE", path_in_repo="LICENSE",
                     repo_id=args.repo_id, repo_type="model")
     for name, path in uploads.items():
         api.upload_file(path_or_fileobj=str(path), path_in_repo=name,

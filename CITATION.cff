@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+title: "TurnWave: end-of-turn detection for voice agents, trained from scratch"
+message: "If you use this software or its models, please cite it."
+type: software
+authors:
+  - family-names: Sukthe
+    given-names: Nikhil
+repository-code: "https://github.com/Nikhils-G/turnwave"
+abstract: >-
+  A from-scratch end-of-turn detector for voice agents: a causal transformer over
+  the transcript tail and a CNN over log-mel spectrograms, plus a fusion head. No
+  pretrained weights, and the log-mel front end is hand-built on torch.stft.
+  Evaluated on LiveKit's eot-bench, where it beats the VAD baseline on every
+  reported metric at 4.8 ms CPU inference. The project also documents a
+  generalization failure that in-domain metrics hid entirely, and the training-data
+  change that fixed it.
+keywords:
+  - end-of-turn detection
+  - turn-taking
+  - voice agents
+  - speech
+  - onnx
+license: Apache-2.0
+version: "1.0.0"
+date-released: "2026-09-01"
