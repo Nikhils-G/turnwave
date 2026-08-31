@@ -30,12 +30,80 @@ the training loop, the metrics. No HF `Trainer`, no pretrained weights.
       trained on real pauses in real speech — **test AP 0.938**
 - [x] **Phase 3 — fusion + deployment**: fused model over both frozen branches —
       **test AP 0.945, beating both branches**; 9.4 ms CPU inference
-- [x] **Phase 4 — benchmark adapter**: plugs into LiveKit's official eot-bench
-      harness, so our row is computed by their code — *adapter done, run pending*
-- [ ] **Phase 4b** — live LiveKit agent demo
+- [x] **Phase 4 — independent benchmark**: scored by LiveKit's own eot-bench
+      harness. Exposed a generalization failure the in-domain numbers had hidden
+      completely — AP 0.945 in-domain, AUC 0.563 on real conversation
+- [x] **Phase 5 — the fix**: retrained the acoustic branch on conversational data.
+      **AUC 0.563 → 0.770**, and it now beats the VAD baseline on every benchmark
+      metric. Training is also resumable now, so a dead session costs 249 steps
+- [ ] **Phase 6** — transcribe the conversational corpus so fusion can be retrained
+      and re-benchmarked; live LiveKit agent demo
 - [ ] **Phase 5 — Indic multilingual**: Hindi + more via Sarvam-generated data
 
-## Results — Phase 1 (text branch)
+## Results — measured on an independent benchmark
+
+Scored by [LiveKit's eot-bench](https://github.com/livekit/eot-bench) harness, on
+real human-to-agent conversations, using their code and their published baselines.
+Lower is better in the first two columns; **bold marks the best in each column.**
+
+| model | false cutoffs @300 ms ↓ | @600 ms ↓ | latency @5% cutoff ↓ |
+|---|---|---|---|
+| VAD baseline | 55.6% | 21.7% | 1600 ms |
+| **TurnWave audio branch** | **42.1%** | **17.2%** | **1195 ms** |
+| SmartTurn v3.2 | 35.2% | 14.8% | 1051 ms |
+| LiveKit Turn Detector v1 | **9.9%** | **4.5%** | **543 ms** |
+
+TurnWave sits between the VAD baseline and SmartTurn. It is behind both production
+models, and the comparison is not a fair fight: SmartTurn starts from a pretrained
+Whisper encoder, LiveKit's is a fine-tuned 0.5B LLM distilled from a 7B teacher.
+This is a 3.49M-parameter CNN trained from random initialisation, and it runs in
+**4.8 ms on one CPU thread**.
+
+### How the first version of this model failed, and what fixed it
+
+The interesting result is not that row. It is what the benchmark caught before it.
+
+The Phase 4 model scored **AP 0.945** on its own held-out test set. On eot-bench it
+scored **AUC 0.563** — barely above random — and the policy sweep chose thresholds
+of 0.0 and 1.0, meaning *ignore the model entirely*, landing exactly on the VAD
+baseline. A model that looked excellent by every number we had generated ourselves
+was worth nothing on real conversation.
+
+The cause was the training corpus, not the architecture. `Scicom-intl/semantic-vad-eot`
+derives from a dataset whose own card declares
+`task_categories: [automatic-speech-recognition, text-to-speech]`. **It is read
+speech.** Its pauses are reading hesitations and sentence boundaries; each row held
+one utterance, so there was never a conversation in it. The model had learned
+*"has this sentence finished being read aloud"* — a real skill, and the wrong task.
+
+Phase 5 changed **only the training data**, to `pipecat-ai/smart-turn-data-v3.2`
+(human-authored end-of-turn labels from real voice-agent contexts). Same window,
+same architecture, same step budget, so the difference is attributable:
+
+| on eot-bench | Phase 4 (read speech) | Phase 5 (conversational) |
+|---|---|---|
+| AUC | 0.563 | **0.770** |
+| AP | 0.472 | **0.602** |
+| median p(eot) — true turn ends | 0.42 | **0.78** |
+| median p(eot) — mid-turn pauses | 0.29 | **0.24** |
+| false cutoffs @300 ms | 55.6% (= VAD) | **42.1%** |
+
+The clearest evidence is what the sweep does with the model. In Phase 4 it picked
+degenerate thresholds and ignored it; now it picks 0.07–0.42 with detection rates
+of 80–96%. The model went from decoration to load-bearing.
+
+**The lesson, stated plainly: our own test set was measuring the wrong thing, and
+no amount of it would have revealed that.** Only an independent benchmark on data
+we did not build could. That is why the eot-bench adapter exists, and why the
+in-domain numbers below are reported as diagnostics rather than as results.
+
+## In-domain diagnostics (not results)
+
+These come from held-out splits of our *own* training corpora. Phase 4's
+0.945 below is exactly the number that proved misleading, and it is kept here
+as the evidence for the point above rather than as a claim about the model.
+
+### Phase 1 text branch (DailyDialog)
 
 Held-out test set: 15,086 examples drawn from DailyDialog's own test dialogues,
 so no utterance appears in training.
@@ -83,7 +151,7 @@ are accidentally complete phrases, which is precisely the label noise capping
 this branch. Failing that, stronger regularization plus early stopping on AP is
 the cheap text-only answer.
 
-## Results — the ablation
+### Phase 4 ablation — text, audio, and fusion (read-speech corpus)
 
 7,817 held-out examples, every model scored on **the same examples**, so each row
 differs only by what the model can see:
@@ -96,8 +164,9 @@ differs only by what the model can see:
 | audio only | 0.770 | 0.907 | 0.714 | 0.799 | 0.938 |
 | **fused (text + audio)** | **0.802** | **0.888** | **0.791** | **0.837** | **0.945** |
 
-**Fusion beats both branches.** That is the claim the project was built to test,
-and it held twice — once at AP 0.767 in the first run, again here at 0.945.
+Fusion beat both branches on this corpus. That finding stands as far as it goes,
+but the corpus turned out to be the wrong task, so it awaits a rerun once the
+conversational data has transcripts (see Phase 6 below).
 
 ![Acoustic branch training](docs/audio_curves.png)
 
@@ -145,6 +214,17 @@ because this corpus is isolated utterances with no dialogue context — it is ru
 without the previous turn it was designed to condition on. That is a limitation of
 the evaluation data, not a regression, and it is precisely the condition a fused
 model is meant to cover.
+
+
+### Phase 5 acoustic branch (conversational corpus)
+
+100,000 clips from `smart-turn-data-v3.2`, 8,000 steps on a Kaggle T4.
+Best validation **AP 0.919** at step 6,000.
+
+![Phase 5 acoustic branch](docs/audio_v2_curves.png)
+
+Not comparable to the 0.938 above — different corpus, different task. The number
+that counts is the benchmark row at the top.
 
 ## Phase 2 — the acoustic branch
 
