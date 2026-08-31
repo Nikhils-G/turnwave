@@ -78,3 +78,45 @@ def test_clip_is_frozen():
 
     with pytest.raises(Exception):
         only(row()).label = 0  # type: ignore[misc]
+
+
+# --- Phase 6: transcript merging -------------------------------------------
+
+TRANSCRIPTS = {"abc": " I want a LARGE pepperoni, and... ", "other": "hello"}
+
+
+def test_transcript_fills_text_normalized():
+    """Whisper output carries casing and punctuation the text branch never saw in
+    training; it must pass through the same ASR normalization as everything else."""
+    clip = only(row(id="abc"), transcripts=TRANSCRIPTS)
+    assert clip.text == "i want a large pepperoni and"
+
+
+def test_missing_transcript_keeps_the_clip_with_empty_text():
+    """At inference the text branch sees whatever ASR produced, including nothing.
+    Dropping uncovered clips would train on an unrealistically clean distribution."""
+    clip = only(row(id="uncovered"), transcripts=TRANSCRIPTS)
+    assert clip is not None and clip.text == ""
+
+
+def test_no_transcripts_argument_means_no_text():
+    assert only(row(id="abc")).text == ""
+
+
+def test_load_transcripts_tolerates_a_torn_tail_line(tmp_path):
+    """A session killed mid-write leaves a partial final line; resuming must not
+    refuse to start over it."""
+    from turnwave.data.smart_turn import load_transcripts
+
+    path = tmp_path / "t.jsonl"
+    path.write_text('{"id": "a", "text": "hello there"}\n{"id": "b", "te')
+    loaded = load_transcripts(path)
+    assert loaded == {"a": "hello there"}
+
+
+def test_load_transcripts_null_text_becomes_empty(tmp_path):
+    from turnwave.data.smart_turn import load_transcripts
+
+    path = tmp_path / "t.jsonl"
+    path.write_text('{"id": "a", "text": null}\n')
+    assert load_transcripts(path) == {"a": ""}

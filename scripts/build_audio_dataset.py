@@ -27,7 +27,7 @@ from turnwave.data.eot_audio import DEFAULT_CUT_OFFSET, iter_cuts, slice_tail
 from turnwave.data.features import fit_window
 from turnwave.data.smart_turn import DATASET as SMART_TURN_DATASET
 from turnwave.data.smart_turn import TEST_DATASET as SMART_TURN_TEST
-from turnwave.data.smart_turn import iter_clips
+from turnwave.data.smart_turn import iter_clips, load_transcripts
 from turnwave.data.features import LogMel, MelConfig
 
 DEFAULT_DATASET = "Scicom-intl/semantic-vad-eot"
@@ -39,7 +39,8 @@ def build_split(dataset: str, config: str, split: str, out_dir: Path, max_exampl
                 mel: LogMel, cut_offset: float = DEFAULT_CUT_OFFSET,
                 source: str = "semantic-vad", languages: set[str] | None = None,
                 real_only: bool = False, quiet: bool = False,
-                split_name: str | None = None, skip: int = 0) -> dict:
+                split_name: str | None = None, skip: int = 0,
+                transcripts: dict[str, str] | None = None) -> dict:
     cfg = mel.cfg
     out_dir.mkdir(parents=True, exist_ok=True)
     # The output name is ours; `split` is whatever the upstream repo calls it.
@@ -74,7 +75,8 @@ def build_split(dataset: str, config: str, split: str, out_dir: Path, max_exampl
                 continue
             items = (list(iter_cuts(row, cut_offset_seconds=cut_offset))
                      if source == "semantic-vad"
-                     else list(iter_clips(row, languages=languages, real_only=real_only)))
+                     else list(iter_clips(row, languages=languages, real_only=real_only,
+                                          transcripts=transcripts)))
             if not items:
                 continue
             try:
@@ -131,6 +133,9 @@ def main(argv=None):
                     help="smart-turn: ISO-639-3 filter, e.g. eng. Default keeps all.")
     ap.add_argument("--real-only", action="store_true",
                     help="smart-turn: drop synthetic (TTS) clips")
+    ap.add_argument("--transcripts", type=Path, default=None,
+                    help="smart-turn: JSONL from scripts/transcribe_clips.py; "
+                         "fills each clip's text so fusion can train")
     ap.add_argument("--max-examples", type=int, default=60000, help="cap for the train split")
     ap.add_argument("--max-eval-examples", type=int, default=6000)
     ap.add_argument("--cut-offset", type=float, default=DEFAULT_CUT_OFFSET,
@@ -142,6 +147,9 @@ def main(argv=None):
 
     mel = LogMel(MelConfig())
     languages = set(args.languages) if args.languages else None
+    transcripts = load_transcripts(args.transcripts) if args.transcripts else None
+    if transcripts is not None:
+        print(f"transcripts: {len(transcripts):,} clips covered")
     summaries = []
     for split in args.splits:
         cap = args.max_examples if split == "train" else args.max_eval_examples
@@ -161,12 +169,14 @@ def main(argv=None):
         summaries.append(build_split(dataset, config, hf_split, args.out, cap, mel,
                                      cut_offset=args.cut_offset, source=args.source,
                                      languages=languages, real_only=args.real_only,
-                                     quiet=args.quiet, split_name=split, skip=skip))
+                                     quiet=args.quiet, split_name=split, skip=skip,
+                                     transcripts=transcripts))
 
     manifest = {
         "source": args.source, "dataset": args.dataset, "config": args.config,
         "languages": sorted(languages) if languages else None,
         "real_only": args.real_only,
+        "transcripts": str(args.transcripts) if args.transcripts else None,
         "cut_offset_seconds": args.cut_offset if args.source == "semantic-vad" else None,
         "mel": {k: getattr(mel.cfg, k) for k in
                 ("sample_rate", "n_fft", "hop_length", "n_mels", "f_min", "f_max",

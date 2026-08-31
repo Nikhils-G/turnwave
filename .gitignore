@@ -20,3 +20,4 @@ dist/
 
 # generated model card (rebuilt by scripts/publish_hf.py)
 docs/model_card.md
+context-session.md
