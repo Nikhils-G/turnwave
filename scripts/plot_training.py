@@ -57,12 +57,27 @@ def main(argv=None):
     best_i = max(range(len(steps)), key=lambda i: log["val_ap"][i])
     best_step, best_ap = steps[best_i], log["val_ap"][best_i]
 
+    # Titles are derived, not hardcoded. A fixed caption written for one run
+    # ("the model starts memorizing") is simply false on a run that never
+    # overfits, and a chart whose title contradicts its own curves is worse
+    # than one with no title at all.
+    val_loss = log["val_loss"]
+    min_i = min(range(len(val_loss)), key=lambda i: val_loss[i])
+    rebound = val_loss[-1] - val_loss[min_i]
+    if rebound > 0.02 and min_i < len(steps) - 2:
+        loss_title = f"Loss — validation turns at step {steps[min_i]:,.0f}"
+    else:
+        loss_title = "Loss — train and validation still together"
+    metric_title = (f"Validation quality — AP still rising at step {steps[-1]:,.0f}"
+                    if best_i >= len(steps) - 2
+                    else f"Validation quality — AP peaks at step {best_step:,.0f}")
+
     fig, (ax_loss, ax_metric) = plt.subplots(1, 2, figsize=(11, 4.2), dpi=160)
     fig.patch.set_facecolor(SURFACE)
 
     ax_loss.plot(steps, log["train_loss"], color=SERIES_1, linewidth=2, label="train", zorder=3)
     ax_loss.plot(steps, log["val_loss"], color=SERIES_2, linewidth=2, label="validation", zorder=3)
-    style_axis(ax_loss, "Loss — the model starts memorizing", "binary cross-entropy")
+    style_axis(ax_loss, loss_title, "binary cross-entropy")
 
     ax_metric.plot(steps, log["val_ap"], color=SERIES_1, linewidth=2,
                    label="average precision", zorder=3)
@@ -75,7 +90,7 @@ def main(argv=None):
         color=INK_MUTED, fontsize=8.5, ha="center",
         arrowprops=dict(arrowstyle="-", color=INK_MUTED, linewidth=0.8),
     )
-    style_axis(ax_metric, "Validation quality — ranking holds up longer", "score")
+    style_axis(ax_metric, metric_title, "score")
 
     for ax in (ax_loss, ax_metric):
         legend = ax.legend(frameon=False, fontsize=9, loc="best")

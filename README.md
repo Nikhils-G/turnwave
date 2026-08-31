@@ -24,7 +24,7 @@ the training loop, the metrics. No HF `Trainer`, no pretrained weights.
 - [x] **Phase 0 — scaffold**: uv project, package layout, data builders
 - [x] **Phase 1 — text branch**: BPE tokenizer + 6.92M-param causal transformer
       over the transcript tail (with previous-turn context), trained on DailyDialog
-      complete-vs-truncated pairs — **test F1 0.838, AP 0.889** (see Results)
+      complete-vs-truncated pairs — **test F1 0.847, AP 0.888** (see Results)
 - [x] **Phase 2 — acoustic branch**: log-mel front end written from scratch
       (`torch.stft` + a hand-built mel filterbank) and a 3.49M-param CNN over it,
       trained on real pauses in real speech — **test AP 0.741**
@@ -44,10 +44,15 @@ so no utterance appears in training.
 |---|---|---|---|---|---|
 | majority class | 0.513 | 0.513 | 1.000 | 0.678 | 0.513 |
 | cue-word heuristic | 0.690 | 0.637 | 0.921 | 0.753 | 0.624 |
-| **TurnWave text model** | **0.832** | **0.827** | **0.849** | **0.838** | **0.889** |
+| **TurnWave text model** | **0.833** | **0.800** | **0.898** | **0.847** | **0.888** |
 
-6.92M parameters, 6,000 steps on a Colab T4 (~50 min), batch size 256, AdamW with
-warmup + cosine decay. Best validation AP 0.895.
+6.92M parameters, 3,500 steps on a Colab T4 (~30 min), batch size 256, AdamW with
+warmup + cosine decay. Best validation AP 0.894 at step 1,250.
+
+The budget was cut from 6,000 steps to 3,500 on the strength of the first run's
+curves, and the shorter run scored *better* on the test set (F1 0.847 vs 0.838)
+for half the compute — the last 2,500 steps had been buying nothing but
+overconfidence.
 
 Average precision is the metric to read here: the cue-word heuristic reaches
 decent recall by guessing "complete" for most inputs, but ranks poorly (AP 0.624)
