@@ -13,7 +13,7 @@ One loop serves every task because all three collates return
 `(inputs_tuple, labels)` and every model is called as `model(*inputs)`.
 
 Add --steps 300 --limit 20000 for a CPU smoke run; real training is a Colab T4
-session (see notebooks/colab_train.ipynb).
+or Kaggle session (see notebooks/ for the executed runs).
 """
 
 import argparse

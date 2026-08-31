@@ -269,7 +269,8 @@ are not in yet:
   A stride-2 stem, with the width moved to the cheap end, brings it to 4.5 ms at
   the same parameter count.
 
-Run it: `notebooks/colab_phase2.ipynb`.
+The executed runs, outputs included, are in `notebooks/`:
+`01_phases1-4_colab.ipynb` and `02_phase5_kaggle.ipynb`.
 
 ## Benchmarking against published models
 
@@ -327,7 +328,7 @@ uv run python scripts/plot_training.py checkpoints/text_eot/log.csv
 
 CPU-only machines: add `--limit 20000 --steps 300` to `turnwave.train` for a smoke
 run; real training is a few GPU-hours on a free Colab T4
-(`notebooks/colab_train.ipynb`).
+or Kaggle GPU. `notebooks/` holds the actual sessions, outputs included.
 
 Try it:
 
