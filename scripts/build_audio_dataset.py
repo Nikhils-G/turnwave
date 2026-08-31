@@ -24,18 +24,28 @@ from datasets import Audio, load_dataset
 from tqdm import tqdm
 
 from turnwave.data.eot_audio import DEFAULT_CUT_OFFSET, iter_cuts, slice_tail
+from turnwave.data.features import fit_window
+from turnwave.data.smart_turn import DATASET as SMART_TURN_DATASET
+from turnwave.data.smart_turn import TEST_DATASET as SMART_TURN_TEST
+from turnwave.data.smart_turn import iter_clips
 from turnwave.data.features import LogMel, MelConfig
 
 DEFAULT_DATASET = "Scicom-intl/semantic-vad-eot"
 
+SOURCES = ("semantic-vad", "smart-turn")
+
 
 def build_split(dataset: str, config: str, split: str, out_dir: Path, max_examples: int,
                 mel: LogMel, cut_offset: float = DEFAULT_CUT_OFFSET,
-                quiet: bool = False) -> dict:
+                source: str = "semantic-vad", languages: set[str] | None = None,
+                real_only: bool = False, quiet: bool = False,
+                split_name: str | None = None, skip: int = 0) -> dict:
     cfg = mel.cfg
     out_dir.mkdir(parents=True, exist_ok=True)
-    feature_path = out_dir / f"{split}.f16.npy"
-    meta_path = out_dir / f"{split}.jsonl"
+    # The output name is ours; `split` is whatever the upstream repo calls it.
+    name = split_name or split
+    feature_path = out_dir / f"{name}.f16.npy"
+    meta_path = out_dir / f"{name}.jsonl"
 
     # Preallocated because a streamed corpus has no length until it is consumed;
     # the manifest records how much of the file is real.
@@ -44,19 +54,28 @@ def build_split(dataset: str, config: str, split: str, out_dir: Path, max_exampl
         shape=(max_examples, cfg.n_mels, cfg.n_frames),
     )
 
-    ds = load_dataset(dataset, config, split=split, streaming=True)
+    ds = (load_dataset(dataset, split=split, streaming=True) if config is None
+          else load_dataset(dataset, config, split=split, streaming=True))
     ds = ds.cast_column("audio", Audio(decode=False))
 
     written = 0
     rows_used = 0
     positives = 0
-    progress = tqdm(total=max_examples, desc=f"{split:10s}", disable=quiet, unit="ex")
+    progress = tqdm(total=max_examples, desc=f"{name:10s}", disable=quiet, unit="ex")
+    skipped = 0
     with open(meta_path, "w") as meta_file:
         for row in ds:
             if written >= max_examples:
                 break
-            cuts = list(iter_cuts(row, cut_offset_seconds=cut_offset))
-            if not cuts:
+            if skipped < skip:
+                # smart-turn ships one eval repo, so validation and test are carved
+                # from it by offset. Without this they would be the same rows.
+                skipped += 1
+                continue
+            items = (list(iter_cuts(row, cut_offset_seconds=cut_offset))
+                     if source == "semantic-vad"
+                     else list(iter_clips(row, languages=languages, real_only=real_only)))
+            if not items:
                 continue
             try:
                 wav, sample_rate = sf.read(io.BytesIO(row["audio"]["bytes"]), dtype="float32")
@@ -65,24 +84,35 @@ def build_split(dataset: str, config: str, split: str, out_dir: Path, max_exampl
             if sample_rate != cfg.sample_rate:
                 continue
             waveform = torch.from_numpy(wav)
+            if waveform.ndim > 1:
+                waveform = waveform.mean(dim=1)
             rows_used += 1
-            for cut in cuts:
+            for item in items:
                 if written >= max_examples:
                     break
-                tail = slice_tail(waveform, cut.cut_seconds, cfg.sample_rate, cfg.n_samples)
-                features[written] = mel(tail).numpy().astype(np.float16)
+                if source == "semantic-vad":
+                    window = slice_tail(waveform, item.cut_seconds, cfg.sample_rate,
+                                        cfg.n_samples)
+                    extra = {"cut": round(item.cut_seconds, 3)}
+                else:
+                    # smart-turn clips already end at the decision point, so the
+                    # window is just the tail -- no cut logic, no offset.
+                    window = fit_window(waveform, cfg.n_samples)
+                    extra = {"language": item.language, "synthetic": item.synthetic,
+                             "source": item.source}
+                features[written] = mel(window).numpy().astype(np.float16)
                 meta_file.write(json.dumps({
-                    "i": written, "text": cut.text, "label": cut.label,
-                    "id": row.get("id"), "cut": round(cut.cut_seconds, 3),
+                    "i": written, "text": item.text, "label": item.label,
+                    "id": getattr(item, "clip_id", None) or row.get("id"), **extra,
                 }) + "\n")
-                positives += cut.label
+                positives += item.label
                 written += 1
                 progress.update(1)
     progress.close()
     features.flush()
 
     return {
-        "split": split, "examples": written, "rows_used": rows_used,
+        "split": name, "examples": written, "rows_used": rows_used,
         "positives": positives, "negatives": written - positives,
         "positive_rate": round(positives / written, 4) if written else 0.0,
         "features": feature_path.name, "meta": meta_path.name,
@@ -92,8 +122,15 @@ def build_split(dataset: str, config: str, split: str, out_dir: Path, max_exampl
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", type=Path, default=Path("data/audio"))
-    ap.add_argument("--dataset", default=DEFAULT_DATASET)
-    ap.add_argument("--config", default="en")
+    ap.add_argument("--source", choices=SOURCES, default="semantic-vad",
+                    help="smart-turn: conversational clips with endpoint_bool labels "
+                         "and no transcripts (audio branch only)")
+    ap.add_argument("--dataset", default=None, help="overrides the source default")
+    ap.add_argument("--config", default=None)
+    ap.add_argument("--languages", nargs="*", default=None,
+                    help="smart-turn: ISO-639-3 filter, e.g. eng. Default keeps all.")
+    ap.add_argument("--real-only", action="store_true",
+                    help="smart-turn: drop synthetic (TTS) clips")
     ap.add_argument("--max-examples", type=int, default=60000, help="cap for the train split")
     ap.add_argument("--max-eval-examples", type=int, default=6000)
     ap.add_argument("--cut-offset", type=float, default=DEFAULT_CUT_OFFSET,
@@ -104,15 +141,33 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     mel = LogMel(MelConfig())
+    languages = set(args.languages) if args.languages else None
     summaries = []
     for split in args.splits:
         cap = args.max_examples if split == "train" else args.max_eval_examples
-        summaries.append(build_split(args.dataset, args.config, split, args.out, cap,
-                                     mel, cut_offset=args.cut_offset, quiet=args.quiet))
+        skip = 0
+        if args.source == "smart-turn":
+            # The upstream ships train and test as separate repos, each with a
+            # split literally named "train". Validation and test are both carved
+            # from the eval repo, test offset past validation so they never overlap.
+            dataset = args.dataset or (SMART_TURN_DATASET if split == "train"
+                                       else SMART_TURN_TEST)
+            config, hf_split = args.config, "train"
+            if split == "test":
+                skip = args.max_eval_examples
+        else:
+            dataset = args.dataset or DEFAULT_DATASET
+            config, hf_split = args.config or "en", split
+        summaries.append(build_split(dataset, config, hf_split, args.out, cap, mel,
+                                     cut_offset=args.cut_offset, source=args.source,
+                                     languages=languages, real_only=args.real_only,
+                                     quiet=args.quiet, split_name=split, skip=skip))
 
     manifest = {
-        "dataset": args.dataset, "config": args.config,
-        "cut_offset_seconds": args.cut_offset,
+        "source": args.source, "dataset": args.dataset, "config": args.config,
+        "languages": sorted(languages) if languages else None,
+        "real_only": args.real_only,
+        "cut_offset_seconds": args.cut_offset if args.source == "semantic-vad" else None,
         "mel": {k: getattr(mel.cfg, k) for k in
                 ("sample_rate", "n_fft", "hop_length", "n_mels", "f_min", "f_max",
                  "window_seconds", "log_floor")},

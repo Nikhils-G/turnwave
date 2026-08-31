@@ -115,6 +115,8 @@ def main(argv=None):
     ap.add_argument("--limit", type=int, default=None, help="subsample training rows (smoke tests)")
     ap.add_argument("--num-workers", type=int, default=2)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--resume", action="store_true",
+                    help="continue from last.pt in --out (safe when it does not exist)")
     ap.add_argument("--device", default="auto")
     args = ap.parse_args(argv)
 
@@ -180,12 +182,20 @@ def main(argv=None):
 
     args.out.mkdir(parents=True, exist_ok=True)
     log_path = args.out / "log.csv"
-    with open(log_path, "w", newline="") as f:
-        csv.writer(f).writerow(["step", "lr", "train_loss", "val_loss", "val_acc", "val_f1", "val_ap"])
+    if not (args.resume and log_path.exists()):
+        with open(log_path, "w", newline="") as f:
+            csv.writer(f).writerow(["step", "lr", "train_loss", "val_loss",
+                                    "val_acc", "val_f1", "val_ap"])
 
-    def save(name: str, step: int, val: dict):
+    def save(name: str, step: int, val: dict, best: float = -1.0):
         payload = {"model": model.state_dict(), "config": asdict(cfg),
                    "task": args.task, "step": step, "val": val}
+        if name == "last.pt":
+            # Only the rolling checkpoint carries training state. best.pt stays a
+            # clean artifact for export and publishing; an optimizer state_dict is
+            # roughly the model's own size and has no meaning outside this run.
+            payload["optimizer"] = optimizer.state_dict()
+            payload["best_ap"] = best
         if args.task == "fusion":
             # FusionConfig alone cannot rebuild the model: the branch shapes live
             # in their own configs, and the weights in this state_dict are useless
@@ -196,6 +206,26 @@ def main(argv=None):
 
     best_ap = -1.0
     step = 0
+    resume_path = args.out / "last.pt"
+    if args.resume and resume_path.exists():
+        # Restoring the optimizer matters as much as the weights: Adam's moment
+        # estimates are what keep the loss from spiking at the seam, and the LR
+        # schedule is a pure function of `step`, so it lines up on its own.
+        state = torch.load(resume_path, map_location=device, weights_only=False)
+        model.load_state_dict(state["model"])
+        if "optimizer" in state:
+            optimizer.load_state_dict(state["optimizer"])
+        else:
+            print("warning: checkpoint predates --resume, optimizer state unavailable")
+        step = int(state.get("step", 0))
+        best_ap = float(state.get("best_ap", -1.0))
+        print(f"resumed from {resume_path} at step {step} (best AP {best_ap:.4f})")
+        if step >= args.steps:
+            print(f"already at {step} of {args.steps} steps; nothing to do")
+            return
+    elif args.resume:
+        print(f"no checkpoint at {resume_path}; starting fresh")
+
     running_loss = []
     model.train()
     while step < args.steps:
@@ -230,10 +260,10 @@ def main(argv=None):
                 with open(log_path, "a", newline="") as f:
                     csv.writer(f).writerow([step, f"{lr:.6g}", f"{train_loss:.5f}", f"{val['loss']:.5f}",
                                             f"{val['accuracy']:.4f}", f"{val['f1']:.4f}", f"{val['ap']:.4f}"])
-                save("last.pt", step, val)
                 if val["ap"] > best_ap:
                     best_ap = val["ap"]
                     save("best.pt", step, val)
+                save("last.pt", step, val, best=best_ap)
 
     print(f"done. best val AP {best_ap:.3f}  checkpoints in {args.out}")
 
