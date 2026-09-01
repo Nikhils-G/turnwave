@@ -98,3 +98,22 @@ def test_current_utterance_prefers_the_trailing_user_message():
 def test_current_utterance_handles_an_empty_history():
     assert TurnWaveAdapter._current_utterance([]) == ""
     assert TurnWaveAdapter._current_utterance(None) == ""
+
+
+def test_text_only_adapter_declares_no_audio_requirement(monkeypatch):
+    """The harness validates max_audio_sec and rejects 0.0 outright, so a model
+    that consumes no audio must leave the attribute unset entirely."""
+
+    class StubDetector:
+        needs_audio = False
+        needs_text = True
+
+        def __init__(self, *a, **k):
+            pass
+
+    import turnwave.eot_bench_adapter as adapter_module
+
+    monkeypatch.setattr(adapter_module, "TurnDetector", StubDetector)
+    monkeypatch.setenv("TURNWAVE_ONNX", "stub.onnx")
+    adapter = adapter_module.TurnWaveTextOnlyAdapter()
+    assert not hasattr(adapter, "max_audio_sec")

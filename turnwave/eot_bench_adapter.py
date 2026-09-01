@@ -47,9 +47,11 @@ class TurnWaveAdapter:
             raise ValueError("set TURNWAVE_ONNX to an exported .onnx model")
         tokenizer = tokenizer or os.environ.get("TURNWAVE_TOKENIZER")
         self.detector = TurnDetector(onnx_path, tokenizer=tokenizer)
-        # Tell the harness how much causal audio we need; it trims for us.
-        self.max_audio_sec = (self.detector.mel.cfg.window_seconds
-                              if self.detector.needs_audio else 0.0)
+        # Tell the harness how much causal audio we need; it trims for us. For a
+        # text-only model the attribute is left unset rather than 0.0 — the
+        # harness validates the value and rejects zero as invalid.
+        if self.detector.needs_audio:
+            self.max_audio_sec = self.detector.mel.cfg.window_seconds
 
     def supports_language(self, language_code: str) -> bool:
         """English only: the model is trained on English and the headline
