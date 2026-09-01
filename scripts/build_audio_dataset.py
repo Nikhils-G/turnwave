@@ -133,6 +133,10 @@ def main(argv=None):
                     help="smart-turn: ISO-639-3 filter, e.g. eng. Default keeps all.")
     ap.add_argument("--real-only", action="store_true",
                     help="smart-turn: drop synthetic (TTS) clips")
+    ap.add_argument("--hf-split", default=None,
+                    help="smart-turn: upstream split name when it is not 'train' — "
+                         "e.g. 'eng' for the English derivative, whose languages "
+                         "are splits rather than configs")
     ap.add_argument("--transcripts", type=Path, default=None,
                     help="smart-turn: JSONL from scripts/transcribe_clips.py; "
                          "fills each clip's text so fusion can train")
@@ -160,7 +164,7 @@ def main(argv=None):
             # from the eval repo, test offset past validation so they never overlap.
             dataset = args.dataset or (SMART_TURN_DATASET if split == "train"
                                        else SMART_TURN_TEST)
-            config, hf_split = args.config, "train"
+            config, hf_split = args.config, (args.hf_split or "train")
             if split == "test":
                 skip = args.max_eval_examples
         else:
