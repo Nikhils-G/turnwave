@@ -68,16 +68,21 @@ def build_split(dataset: str, config: str, split: str, out_dir: Path, max_exampl
         for row in ds:
             if written >= max_examples:
                 break
-            if skipped < skip:
-                # smart-turn ships one eval repo, so validation and test are carved
-                # from it by offset. Without this they would be the same rows.
-                skipped += 1
-                continue
             items = (list(iter_cuts(row, cut_offset_seconds=cut_offset))
                      if source == "semantic-vad"
                      else list(iter_clips(row, languages=languages, real_only=real_only,
                                           transcripts=transcripts)))
             if not items:
+                continue
+            if skipped < skip:
+                # smart-turn ships one eval repo, so validation and test are carved
+                # from it by offset. The offset must count USABLE examples, after
+                # the language and label filters: counting raw rows breaks as soon
+                # as a filter is active, because the first N raw rows contain far
+                # fewer usable clips than the first N usable clips span — so the
+                # two carves overlap. That exact bug produced leaking eval splits
+                # once; the regression test pins the corrected semantics.
+                skipped += 1
                 continue
             try:
                 wav, sample_rate = sf.read(io.BytesIO(row["audio"]["bytes"]), dtype="float32")
