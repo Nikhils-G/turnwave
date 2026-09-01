@@ -43,8 +43,9 @@ MODELS = {
                        "Phase 4; trained on semantic-vad-eot (CC BY 4.0)"),
     "text_eot.int8.onnx": ("text_eot", "cc-by-nc-sa-4.0",
                            "trained on DailyDialog (CC BY-NC-SA 4.0) — non-commercial"),
-    "fusion_eot.onnx": ("fusion_eot", "cc-by-nc-sa-4.0",
-                        "contains the text branch, so it inherits the same terms"),
+    "fusion_eot_v2.onnx": ("fusion_eot_v2", "cc-by-nc-sa-4.0",
+                           "fusion head retrained on conversational clips; contains "
+                           "the DailyDialog text branch, so it inherits its terms"),
 }
 
 CARD = """---
@@ -163,9 +164,12 @@ not build could.
 - **Behind the production models**, and not a fair comparison: SmartTurn starts from
   a pretrained Whisper encoder, LiveKit's is a fine-tuned 0.5B LLM distilled from a
   7B teacher. This is 3.49M parameters from random initialisation.
-- **The fusion model is stale.** It was trained on the read-speech corpus, which the
-  benchmark showed to be the wrong task. The conversational corpus has no
-  transcripts, so retraining fusion needs ASR first.
+- **Fusion wins in-domain, not on the benchmark — measured, not guessed.** The
+  fused model reaches AP 0.959 vs 0.905 audio-only on held-out conversational
+  clips (Whisper transcripts), but on eot-bench the text branch scores AUC 0.485 —
+  chance — on real human-agent speech, so fusion there is the audio branch diluted
+  by noise (AUC 0.751 vs 0.770). Until a text branch trained on real spoken
+  dialogue exists, `audio_eot_v2` is the model to deploy.
 - **Non-commercial models included.** The text and fusion models derive from
   DailyDialog (CC BY-NC-SA 4.0). Only the audio branches are permissively licensed.
 
@@ -220,7 +224,7 @@ def model_table(onnx_dir: Path) -> tuple[str, dict]:
 
 def latency_table(onnx_dir: Path) -> str:
     rows = ["| model | variant | CPU latency | size |", "|---|---|---|---|"]
-    for key in ("audio_eot_v2", "audio_eot", "text_eot", "fusion_eot"):
+    for key in ("audio_eot_v2", "audio_eot", "text_eot", "fusion_eot_v2"):
         report_path = onnx_dir / f"{key}.export.json"
         if not report_path.exists():
             continue

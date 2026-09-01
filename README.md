@@ -40,8 +40,13 @@ the training loop, the metrics. No HF `Trainer`, no pretrained weights.
 - [x] **Phase 5 — the fix**: retrained the acoustic branch on conversational data.
       **AUC 0.563 → 0.770**, and it now beats the VAD baseline on every benchmark
       metric. Training is also resumable now, so a dead session costs 249 steps
-- [ ] **Phase 6** — transcribe the conversational corpus so fusion can be retrained
-      and re-benchmarked; live LiveKit agent demo
+- [x] **Phase 6 — fusion retested on conversational data**: Whisper transcripts
+      let the fusion head retrain on real clips. **In-domain it wins clearly
+      (AP 0.959 vs 0.905 audio-only); on eot-bench it does not** — because the
+      text branch scores AUC 0.485 on real conversation, so the head fuses noise.
+      A two-number diagnosis, reported as measured
+- [ ] **Phase 7** — a text branch trained on real spoken dialogue (the measured
+      bottleneck); live LiveKit agent demo
 - [ ] **Phase 5 — Indic multilingual**: Hindi + more via Sarvam-generated data
 
 ## Results — measured on an independent benchmark
@@ -100,6 +105,55 @@ of 80–96%. The model went from decoration to load-bearing.
 no amount of it would have revealed that.** Only an independent benchmark on data
 we did not build could. That is why the eot-bench adapter exists, and why the
 in-domain numbers below are reported as diagnostics rather than as results.
+
+
+## Phase 6 — fusion, retested on conversational data
+
+Phase 4's fused model carried a caveat: it was trained on the discredited
+read-speech corpus. Phase 6 removed it. The conversational corpus has no
+transcripts, so faster-whisper generated them for 47,820 English clips
+(`scripts/transcribe_clips.py`, resumable, ~55 min on a T4), and the fusion head
+retrained over the frozen Phase 1 text branch and Phase 5 audio branch — the
+training data again being the only variable.
+
+**In-domain, fusion wins decisively.** Held-out conversational test set, 3,820
+examples, every model on identical examples:
+
+| model | F1 | AP |
+|---|---|---|
+| cue-word heuristic | 0.767 | 0.629 |
+| text only (Whisper input) | 0.747 | 0.665 |
+| audio only | 0.838 | 0.905 |
+| **fused** | **0.899** | **0.959** |
+
+**On eot-bench, it does not — and the reason is now measured, not guessed.**
+
+| on eot-bench (real human-agent audio) | AP | AUC |
+|---|---|---|
+| text only | 0.358 | **0.485** — indistinguishable from chance |
+| audio only | 0.602 | **0.770** |
+| fused | 0.619 | 0.751 |
+
+The text branch is blind on real conversation: AP equals the base rate, AUC is a
+coin flip. So at evaluation time the fusion head blends a good audio signal with
+pure noise, and the result is the audio branch, slightly diluted (policy sweep:
+47.4% / 18.6% false cutoffs vs 42.1% / 17.2% audio-only). The same branch scores
+a useful 0.665 AP on Whisper transcripts of in-domain clips — DailyDialog taught
+it written-style dialogue, and real spoken disfluency is a different language.
+
+Two conclusions, both earned the hard way:
+
+1. **The fusion architecture works when both branches carry signal** — +0.054 AP
+   in-domain over a strong audio branch, through ASR-noised text.
+2. **The measured bottleneck is now the text branch's domain**, not the fusion
+   mechanism and not ASR noise. That is Phase 7's problem statement: a text
+   branch trained on real spoken dialogue.
+
+`audio_eot_v2` remains the deployed recommendation: best benchmark numbers,
+4.8 ms CPU inference. The fused `fusion_eot_v2` (38 ms CPU, in-domain champion)
+ships alongside it with exactly this caveat.
+
+![Phase 6 fusion training](docs/fusion_v2_curves.png)
 
 ## In-domain diagnostics (not results)
 

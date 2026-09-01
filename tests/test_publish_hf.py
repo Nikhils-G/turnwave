@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import publish_hf  # noqa: E402
 
 
-def make_onnx_dir(tmp_path: Path, keys=("audio_eot_v2", "audio_eot", "text_eot", "fusion_eot")):
+def make_onnx_dir(tmp_path: Path, keys=("audio_eot_v2", "audio_eot", "text_eot", "fusion_eot_v2")):
     onnx = tmp_path / "onnx"
     onnx.mkdir()
     recommended = {"text_eot": "int8"}
@@ -59,13 +59,13 @@ def test_licences_follow_the_training_data(tmp_path):
     assert rows["`audio_eot_v2.onnx`"] == "apache-2.0"
     assert rows["`audio_eot.onnx`"] == "cc-by-4.0"
     assert rows["`text_eot.int8.onnx`"] == "cc-by-nc-sa-4.0"
-    assert rows["`fusion_eot.onnx`"] == "cc-by-nc-sa-4.0"
+    assert rows["`fusion_eot_v2.onnx`"] == "cc-by-nc-sa-4.0"
 
 
 def test_non_commercial_models_are_never_labelled_permissive(tmp_path):
     table, _ = publish_hf.model_table(make_onnx_dir(tmp_path))
     for line in table.splitlines():
-        if "text_eot" in line or "fusion_eot" in line:
+        if "text_eot" in line or "fusion_eot_v2" in line:
             assert "apache" not in line.lower()
             assert "non-commercial" in line.lower() or "nc" in line.lower()
 
@@ -108,7 +108,8 @@ def test_card_uses_the_singular_language_key(tmp_path):
 
 def test_card_states_the_limitations(tmp_path):
     card, _ = publish_hf.build_card(make_onnx_dir(tmp_path), "x/y")
-    for expected in ("English only", "Non-commercial", "fusion model is stale"):
+    for expected in ("English only", "Non-commercial",
+                     "Fusion wins in-domain, not on the benchmark"):
         assert expected in card
 
 
