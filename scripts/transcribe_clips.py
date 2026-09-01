@@ -47,10 +47,24 @@ def load_done_ids(path: Path) -> set[str]:
 
 
 def build_model(model_name: str, device: str):
+    """Fastest compute type the hardware actually supports.
+
+    float16 needs CUDA compute capability >= 7.0; on a P100 (6.0) ctranslate2
+    raises a ValueError, so fall through to int8 variants rather than dying.
+    (Note Kaggle's torch build cannot *train* on a P100 at all — for the full
+    pipeline pick a T4 — but transcription alone should not care.)"""
     from faster_whisper import WhisperModel
 
-    compute = "float16" if device == "cuda" else "int8"
-    return WhisperModel(model_name, device=device, compute_type=compute)
+    preferences = ("float16", "int8_float16", "int8") if device == "cuda" else ("int8",)
+    last_error: Exception | None = None
+    for compute in preferences:
+        try:
+            model = WhisperModel(model_name, device=device, compute_type=compute)
+            print(f"whisper {model_name} on {device} ({compute})")
+            return model
+        except ValueError as error:
+            last_error = error
+    raise last_error
 
 
 def transcribe_array(model, audio, sample_rate: int) -> str:

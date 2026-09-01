@@ -64,3 +64,24 @@ def test_language_filter_is_available():
     # smoke the CLI surface rather than the network path
     ap_source = open(transcribe_clips.__file__).read()
     assert "--languages" in ap_source and 'row.get("language")' in ap_source
+
+
+def test_build_model_falls_back_when_float16_unsupported(monkeypatch, capsys):
+    """A P100 rejects float16; the script must degrade to int8, not die."""
+    import sys
+    import types
+
+    calls = []
+
+    class FakeWhisperModel:
+        def __init__(self, name, device=None, compute_type=None):
+            calls.append(compute_type)
+            if compute_type == "float16":
+                raise ValueError("Requested float16 compute type, but ...")
+
+    fake = types.ModuleType("faster_whisper")
+    fake.WhisperModel = FakeWhisperModel
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake)
+
+    transcribe_clips.build_model("base.en", "cuda")
+    assert calls == ["float16", "int8_float16"]
